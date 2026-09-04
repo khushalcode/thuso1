@@ -1,0 +1,228 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: 🔍 Check - after npm install
+        shell: pwsh
+        run: |
+          Write-Host "=== node_modules exists? ==="
+          Test-Path node_modules
+          Write-Host "=== sharp package present? ==="
+          Test-Path node_modules/sharp
+          Write-Host "=== @prisma/client present? ==="
+          Test-Path node_modules/@prisma/client
+          Write-Host "=== .prisma/client present? ==="
+          Test-Path node_modules/.prisma/client
+          Write-Host "=== electron present? ==="
+          Test-Path node_modules/electron
+          if (Test-Path node_modules/electron/package.json) {
+            $ev = (Get-Content node_modules/electron/package.json | ConvertFrom-Json).version
+            Write-Host "Electron version: $ev"
+          }
+          Write-Host "=== node version ==="
+          node --version
+
+      - name: Force-install Windows native binaries
+        run: npm install --no-save --include=optional --os=win32 --cpu=x64 sharp lightningcss @tailwindcss/oxide
+
+      - name: 🔍 Check - after native binary force-install
+        shell: pwsh
+        run: |
+          Write-Host "=== sharp native .node files ==="
+          Get-ChildItem -Path node_modules/sharp -Recurse -Filter *.node -ErrorAction SilentlyContinue |
+            Select-Object FullName, Length
+          Write-Host "=== @img (sharp's platform packages) ==="
+          Get-ChildItem -Path node_modules/@img -Directory -ErrorAction SilentlyContinue |
+            Select-Object Name
+          Write-Host "=== lightningcss native files ==="
+          Get-ChildItem -Path node_modules -Filter "lightningcss*" -Directory -ErrorAction SilentlyContinue |
+            Select-Object Name
+          Write-Host "=== oxide native files ==="
+          Get-ChildItem -Path node_modules -Filter "*oxide*" -Directory -Recurse -ErrorAction SilentlyContinue |
+            Select-Object Name
+
+      - name: Generate Windows icon
+        run: node scripts/gen-icon.js
+
+      - name: 🔍 Check - after icon generation
+        shell: pwsh
+        run: |
+          Write-Host "=== icon files in build/ or scripts output ==="
+          Get-ChildItem -Path build -Filter *.ico -Recurse -ErrorAction SilentlyContinue |
+            Select-Object FullName, Length
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: 🔍 Check - after prisma generate
+        shell: pwsh
+        run: |
+          Write-Host "=== .prisma/client contents (looking for query engine .node/.dll) ==="
+          Get-ChildItem -Path node_modules/.prisma/client -ErrorAction SilentlyContinue |
+            Select-Object Name, Length
+          Write-Host "=== Specifically looking for Windows query engine ==="
+          Get-ChildItem -Path node_modules/.prisma/client -Filter "*query_engine*" -ErrorAction SilentlyContinue
+          Get-ChildItem -Path node_modules/.prisma/client -Filter "*.dll.node" -ErrorAction SilentlyContinue
+
+      - name: Build Next.js
+        run: npm run build
+        env:
+          SKIP_ENV_VALIDATION: 'true'
+
+      - name: 🔍 Check - after Next.js build (standalone output)
+        shell: pwsh
+        run: |
+          Write-Host "=== .next/standalone/server.js exists? ==="
+          Test-Path .next/standalone/server.js
+          Write-Host "=== .next/standalone/.next/static copied? ==="
+          Test-Path .next/standalone/.next/static
+          Write-Host "=== .next/standalone/public copied? ==="
+          Test-Path .next/standalone/public
+          Write-Host "=== sql-wasm files present? ==="
+          Test-Path .next/standalone/public/sql-wasm.wasm
+          Test-Path .next/standalone/public/sql-wasm-browser.wasm
+          Write-Host "=== Prisma engine made it into standalone's traced node_modules? ==="
+          Get-ChildItem -Path .next/standalone/node_modules/.prisma/client -ErrorAction SilentlyContinue |
+            Select-Object Name, Length
+          Write-Host "=== sharp made it into standalone's traced node_modules? ==="
+          Get-ChildItem -Path .next/standalone/node_modules/sharp -Recurse -Filter *.node -ErrorAction SilentlyContinue |
+            Select-Object FullName, Length
+          Get-ChildItem -Path .next/standalone/node_modules/@img -Directory -ErrorAction SilentlyContinue |
+            Select-Object Name
+          Write-Host "=== Total standalone folder size ==="
+          $size = (Get-ChildItem .next/standalone -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+          Write-Host ("{0:N2} MB" -f ($size / 1MB))
+
+      - name: 🔍 Check - smoke test the standalone server directly (node)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Write-Host "=== Attempting to boot server.js with plain node (10s timeout) ==="
+          $env:PORT = "4321"
+          $env:HOSTNAME = "127.0.0.1"
+          $env:NODE_ENV = "production"
+          $proc = Start-Process -FilePath "node" -ArgumentList ".next/standalone/server.js" -WorkingDirectory "." -PassThru -RedirectStandardOutput "smoke-stdout.log" -RedirectStandardError "smoke-stderr.log"
+          Start-Sleep -Seconds 10
+          if ($proc.HasExited) {
+            Write-Host "❌ Server process EXITED early with code $($proc.ExitCode)"
+          } else {
+            Write-Host "✅ Server still running after 10s (good sign)"
+            try {
+              $response = Invoke-WebRequest -Uri "http://127.0.0.1:4321" -UseBasicParsing -TimeoutSec 5
+              Write-Host "✅ Server responded with status $($response.StatusCode)"
+            } catch {
+              Write-Host "⚠️ Server running but didn't respond to HTTP request: $($_.Exception.Message)"
+            }
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host "--- stdout ---"
+          Get-Content smoke-stdout.log -ErrorAction SilentlyContinue
+          Write-Host "--- stderr ---"
+          Get-Content smoke-stderr.log -ErrorAction SilentlyContinue
+
+      - name: Build Windows EXE
+        run: npx electron-builder --win --x64 --publish never
+
+      - name: 🔍 Check - after electron-builder packaging
+        shell: pwsh
+        run: |
+          Write-Host "=== win-unpacked/resources/standalone exists? ==="
+          Test-Path dist/win-unpacked/resources/standalone
+          Write-Host "=== server.js made it into the packaged resources? ==="
+          Test-Path dist/win-unpacked/resources/standalone/server.js
+          Write-Host "=== Prisma engine in PACKAGED resources? ==="
+          Get-ChildItem -Path dist/win-unpacked/resources/standalone/node_modules/.prisma/client -ErrorAction SilentlyContinue |
+            Select-Object Name, Length
+          Write-Host "=== sharp native binary in PACKAGED resources? ==="
+          Get-ChildItem -Path dist/win-unpacked/resources/standalone/node_modules/sharp -Recurse -Filter *.node -ErrorAction SilentlyContinue |
+            Select-Object FullName, Length
+          Write-Host "=== app.asar present? ==="
+          Test-Path dist/win-unpacked/resources/app.asar
+          Write-Host "=== Electron.exe present (renamed to Thuso.exe?) ==="
+          Get-ChildItem -Path dist/win-unpacked -Filter *.exe |
+            Select-Object Name, Length
+          Write-Host "=== builder-effective-config.yaml (electron-builder's own resolved config) ==="
+          Get-Content dist/builder-effective-config.yaml -ErrorAction SilentlyContinue
+
+      - name: 🔍 Check - smoke test the PACKAGED standalone server (Electron as Node)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Write-Host "=== Attempting to boot packaged server.js via Thuso.exe as Node (mirrors main.js exactly) ==="
+          $exe = Get-ChildItem -Path dist/win-unpacked -Filter *.exe | Select-Object -First 1 -ExpandProperty FullName
+          Write-Host "Using exe: $exe"
+          $env:ELECTRON_RUN_AS_NODE = "1"
+          $env:PORT = "4322"
+          $env:HOSTNAME = "127.0.0.1"
+          $env:NODE_ENV = "production"
+          $serverPath = (Resolve-Path "dist/win-unpacked/resources/standalone/server.js").Path
+          $proc = Start-Process -FilePath $exe -ArgumentList "`"$serverPath`"" -WorkingDirectory "dist/win-unpacked/resources/standalone" -PassThru -RedirectStandardOutput "packaged-smoke-stdout.log" -RedirectStandardError "packaged-smoke-stderr.log"
+          Start-Sleep -Seconds 10
+          if ($proc.HasExited) {
+            Write-Host "❌ PACKAGED server process EXITED early with code $($proc.ExitCode) — THIS LIKELY MATCHES THE PRODUCTION BUG"
+          } else {
+            Write-Host "✅ Packaged server still running after 10s"
+            try {
+              $response = Invoke-WebRequest -Uri "http://127.0.0.1:4322" -UseBasicParsing -TimeoutSec 5
+              Write-Host "✅ Packaged server responded with status $($response.StatusCode)"
+            } catch {
+              Write-Host "⚠️ Running but no HTTP response: $($_.Exception.Message)"
+            }
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host "--- packaged stdout ---"
+          Get-Content packaged-smoke-stdout.log -ErrorAction SilentlyContinue
+          Write-Host "--- packaged stderr ---"
+          Get-Content packaged-smoke-stderr.log -ErrorAction SilentlyContinue
+
+      - name: Check EXE files
+        shell: pwsh
+        run: |
+          Write-Host "=== DIST ==="
+          Get-ChildItem -Path dist -Recurse -Filter *.exe |
+            Select-Object FullName, Length
+
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: Thuso-Windows-EXE
+          path: |
+            dist/*.exe
+            dist/win-unpacked/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload smoke test logs (for debugging)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-logs
+          path: |
+            smoke-stdout.log
+            smoke-stderr.log
+            packaged-smoke-stdout.log
+            packaged-smoke-stderr.log
+          if-no-files-found: ignore
+          retention-days: 7

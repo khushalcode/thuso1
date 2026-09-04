@@ -1,0 +1,19 @@
+{
+  "name": "Thuso",
+  "short_name": "Thuso",
+  "description": "Multi-shop restaurant POS with real-time KOT sync",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f172a",
+  "theme_color": "#f97316",
+  "icons": [
+    {
+      "src": "/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["business", "productivity", "food"]
+}

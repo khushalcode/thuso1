@@ -1,0 +1,447 @@
+// Restaurant POS System — Prisma schema
+// OFFLINE-FIRST: SQLite on device for ALL data.
+// Supabase Realtime used ONLY for cross-device event sync (kitchen screen).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---- Shop (multi-restaurant) -------------------------------------------
+model Shop {
+  id          String   @id @default(cuid())
+  name        String
+  code        String   @unique // short code like SPICE, BELLY
+  address     String?
+  phone       String?
+  gstin       String?
+  taxRate     Float    @default(0)
+  serviceRate Float    @default(0)
+  currency    String   @default("Rs.")
+  color       String   @default("orange") // orange | emerald | violet (theme hint)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  menuItems      MenuItem[]
+  menuCategories MenuCategory[]
+  tables         RestaurantTable[]
+  orders         Order[]
+  bills          Bill[]
+  deletedBills   DeletedBill[]
+  zomatoOrders   ZomatoOrder[]
+  users          AppUser[]
+  customers      Customer[]
+  settings       ShopSetting?
+}
+
+// ---- Menu Categories (per-shop, user-manageable) ----------------------
+model MenuCategory {
+  id        String   @id @default(cuid())
+  shopId    String
+  name      String
+  color     String   @default("slate") // slate | amber | rose | orange | sky | violet | emerald
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, name])
+  @@index([shopId, sortOrder])
+}
+
+// ---- Menu ---------------------------------------------------------------
+model MenuItem {
+  id        String   @id @default(cuid())
+  shopId    String
+  name      String
+  category  String   @default("General")
+  price     Float
+  cost      Float    @default(0)
+  stock     Int      @default(0)
+  unit      String   @default("Pcs")
+  image     String?
+  available Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shop       Shop       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orderItems OrderItem[]
+
+  @@index([shopId, category])
+}
+
+// ---- Tables -------------------------------------------------------------
+model RestaurantTable {
+  id             String  @id @default(cuid())
+  shopId         String
+  number         Int
+  name           String  @default("Table")
+  capacity       Int     @default(4)
+  status         String  @default("available")
+  currentOrderId String? @unique
+
+  shop          Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orders        Order[]         @relation("TableOrders")
+  currentOrder  Order?          @relation("TableCurrentOrder", fields: [currentOrderId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([shopId, number])
+  @@index([shopId])
+}
+
+// ---- Orders -------------------------------------------------------------
+model Order {
+  id          String   @id @default(cuid())
+  shopId      String
+  tableId     String
+  status      String   @default("open")
+  type        String   @default("dine_in")
+  guests      Int      @default(1)
+  waiterName  String?
+  customerName String?
+  notes       String?
+  kotPrinted  Boolean  @default(false)
+  billPrinted Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  shop         Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  table        RestaurantTable @relation("TableOrders", fields: [tableId], references: [id])
+  asCurrent    RestaurantTable? @relation("TableCurrentOrder")
+  items        OrderItem[]
+  bill         Bill?
+
+  @@index([shopId, status])
+  @@index([tableId])
+}
+
+// ---- Order Items --------------------------------------------------------
+model OrderItem {
+  id         String   @id @default(cuid())
+  orderId    String
+  menuItemId String
+  name       String
+  price      Float
+  quantity   Int      @default(1)
+  status     String   @default("pending")
+  notes      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  order    Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id])
+
+  @@index([orderId])
+  @@index([status])
+}
+
+// ---- Bills --------------------------------------------------------------
+model Bill {
+  id            String   @id @default(cuid())
+  shopId        String
+  billNo        Int
+  orderId       String   @unique
+  tableNumber   Int
+  subtotal      Float
+  taxRate       Float    @default(0.0)
+  taxAmount     Float    @default(0.0)
+  discount      Float    @default(0.0)
+  serviceCharge Float    @default(0.0)
+  total         Float
+  paymentMode   String   @default("cash")
+  paymentStatus String   @default("paid")
+  paidAt        DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  shop  Shop  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@unique([shopId, billNo])
+  @@index([shopId, paidAt])
+  @@index([tableNumber])
+}
+
+// ---- Deleted Bills (audit / void archive) ------------------------------
+// When a bill is deleted via DELETE /api/bills/[id], the full snapshot of
+// the bill is captured here BEFORE the bill row is removed. This:
+//   • preserves an audit trail (who deleted what, when, why, for how much)
+//   • lets the dashboard/reports subtract the deleted amount from the
+//     main revenue calculation (because the Bill row is gone, the live
+//     revenue already excludes it — but we still need to *show* the
+//     "deleted bill amount" as its own metric and include it in the
+//     Money Out page so the cash flow ties out)
+//   • powers the "Deleted Bills" section on the Money Out page
+model DeletedBill {
+  id                String   @id @default(cuid())
+  shopId            String
+  // Snapshot of the original bill — kept as plain columns (no FK) because
+  // the Bill row is deleted as part of the same operation.
+  originalBillId    String
+  billNo            Int
+  orderId           String
+  tableNumber       Int
+  subtotal          Float
+  taxRate           Float    @default(0.0)
+  taxAmount         Float    @default(0.0)
+  discount          Float    @default(0.0)
+  serviceCharge     Float    @default(0.0)
+  total             Float
+  paymentMode       String   @default("cash")
+  paymentStatus     String   @default("paid")
+  // When the bill was originally paid / created — used to attribute the
+  // deletion to the correct day in reports.
+  originalPaidAt    DateTime
+  originalCreatedAt DateTime
+  // Deletion metadata
+  reason            String?
+  deletedBy         String?  // user name at time of deletion
+  deletedById       String?  // user id at time of deletion
+  deletedAt         DateTime @default(now())
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, deletedAt])
+  @@index([shopId, originalPaidAt])
+  @@index([deletedById])
+}
+
+// ---- Customers ----------------------------------------------------------
+model Customer {
+  id        String   @id @default(cuid())
+  shopId    String
+  name      String
+  phone     String?
+  email     String?
+  address   String?
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, name])
+}
+
+// ---- Suppliers ----------------------------------------------------------
+model Supplier {
+  id        String   @id @default(cuid())
+  shopId    String
+  name      String
+  phone     String?
+  email     String?
+  address   String?
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shopId, name])
+}
+
+// ---- Purchases ----------------------------------------------------------
+model Purchase {
+  id            String   @id @default(cuid())
+  shopId        String
+  invoiceNumber String   @unique
+  supplierId    String?
+  supplierName  String?
+  subtotal      Float
+  taxAmount     Float    @default(0)
+  total         Float
+  paymentMode   String   @default("cash")
+  notes         String?
+  items         String
+  createdAt     DateTime @default(now())
+
+  @@index([shopId, createdAt])
+}
+
+// ---- Expenses -----------------------------------------------------------
+model Expense {
+  id          String   @id @default(cuid())
+  shopId      String
+  category    String
+  description String
+  amount      Float
+  paymentMode String   @default("cash")
+  date        DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@index([shopId, date])
+  @@index([category])
+}
+
+// ---- Money In -----------------------------------------------------------
+model MoneyIn {
+  id          String   @id @default(cuid())
+  shopId      String
+  amount      Float
+  source      String
+  description String?
+  partyName   String?
+  paymentMode String   @default("cash")
+  date        DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@index([shopId, date])
+}
+
+// ---- Money Out ----------------------------------------------------------
+model MoneyOut {
+  id          String   @id @default(cuid())
+  shopId      String
+  amount      Float
+  purpose     String
+  description String?
+  partyName   String?
+  paymentMode String   @default("cash")
+  date        DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@index([shopId, date])
+}
+
+// ---- App Users (admin/staff/kitchen) -----------------------------------
+model AppUser {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  password  String
+  role      String   @default("staff") // admin | staff | kitchen
+  active    Boolean  @default(true)
+  shopId    String?  // primary shop; null = all shops (admin)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shop Shop? @relation(fields: [shopId], references: [id], onDelete: SetNull)
+
+  @@index([shopId])
+}
+
+// ---- Shop Settings (singleton per shop — kept for compat) --------------
+model ShopSetting {
+  id            String   @id @default(cuid())
+  shopId        String   @unique
+  shopName      String   @default("ServingSync Restaurant")
+  address       String?
+  phone         String?
+  email         String?
+  gstin         String?
+  taxRate       Float    @default(0)
+  serviceRate   Float    @default(0)
+  currency      String   @default("Rs.")
+  invoicePrefix String   @default("INV")
+  kotPrefix     String   @default("KOT")
+  footerNote    String   @default("Thank you for dining with us!")
+
+  // Bill style customization
+  billShowLogo      Boolean  @default(true)
+  billShowGstin     Boolean  @default(true)
+  billShowPhone     Boolean  @default(true)
+  billShowAddress   Boolean  @default(true)
+  billShowEmail     Boolean  @default(false)
+  billShowDateTime  Boolean  @default(true)
+  billShowWaiter    Boolean  @default(true)
+  billShowCustomer  Boolean  @default(true)
+  billShowKotNo     Boolean  @default(true)
+  billFontSize      Int      @default(11) // base font size in px
+  billHeaderAlign   String   @default("center") // left | center | right
+  billExtraNote     String?
+  billAccentColor   String   @default("#f97316") // hex color for header accent
+
+  // KOT style customization
+  kotShowLogo       Boolean  @default(true)
+  kotShowWaiter     Boolean  @default(true)
+  kotShowDateTime   Boolean  @default(true)
+  kotShowTable      Boolean  @default(true)
+  kotShowGuests     Boolean  @default(true)
+  kotFontSize       Int      @default(12)
+  kotHeaderAlign    String   @default("center")
+  kotAccentColor    String   @default("#f97316")
+  kotExtraNote      String?
+
+  // Zomato Partner API integration
+  zomatoEnabled    Boolean  @default(false)
+  zomatoApiKey     String?  // Zomato Partner API key / bearer token
+  zomatoRestaurantId String? // Zomato's restaurant ID for this shop
+  zomatoApiBaseUrl String?  // e.g. https://www.zomato.com/partners/v1
+  zomatoWebhookSecret String? // secret to verify incoming webhooks
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+}
+
+// ---- License Keys -------------------------------------------------------
+// Valid keys that can be activated. Seed a few demo keys.
+model LicenseKey {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  duration  Int      @default(365) // days of validity once activated
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+// ---- License Activation (singleton — the active license on this machine) ----
+model LicenseActivation {
+  id           String   @id @default(cuid())
+  key          String   @unique
+  activatedAt  DateTime @default(now())
+  expiresAt    DateTime
+  machineId    String?
+  createdAt    DateTime @default(now())
+}
+
+// ---- Audit Log ----------------------------------------------------------
+model AuditLog {
+  id        String   @id @default(cuid())
+  shopId    String?
+  userId    String?
+  userName  String?
+  userRole  String?
+  action    String   // login | logout | order_create | kot_send | bill_generate | user_create | user_edit | user_delete | settings_update | zomato_push | table_open | table_close
+  details   String?  // JSON string with extra context
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@index([shopId, createdAt])
+  @@index([userId])
+  @@index([action])
+}
+
+// ---- Zomato Orders ------------------------------------------------------
+model ZomatoOrder {
+  id             String   @id @default(cuid())
+  shopId         String
+  zomatoOrderId  String   @unique
+  customerName   String
+  customerPhone  String?
+  deliveryType   String   @default("delivery")
+  address        String?
+  items          String
+  subtotal       Float
+  taxAmount      Float    @default(0)
+  packagingCharge Float   @default(0)
+  deliveryFee    Float    @default(0)
+  discount       Float    @default(0)
+  total          Float
+  paymentMode    String   @default("prepaid")
+  status         String   @default("new")
+  notes          String?
+  internalOrderId String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, status])
+  @@index([createdAt])
+}
