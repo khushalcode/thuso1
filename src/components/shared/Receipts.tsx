@@ -165,7 +165,7 @@ export function BillReceipt({
   // so nothing can render larger or smaller than the TOTAL row, regardless
   // of any font-size rules on the row/center/etc. classes in the print CSS.
   const labelStyle: React.CSSProperties = { fontWeight: bold ? 700 : 400, color: textColor, fontSize: `${fontSize}px` }
-  const valueStyle: React.CSSProperties = { fontWeight: 400, fontSize: `${fontSize}px` }
+  const valueStyle: React.CSSProperties = { fontWeight: bold ? 700 : 400, color: textColor, fontSize: `${fontSize}px`}
 
   const name = style?.shopName || restaurantName || 'Thuso'
   const addr = style?.address || restaurantAddr

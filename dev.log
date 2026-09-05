@@ -2,39 +2,11 @@
 - Local:         http://localhost:3000
 - Network:       http://172.31.42.67:3000
 - Environments: .env
-✓ Ready in 13.9s
-✓ Running next.config.ts took 4.4s
+✓ Ready in 29.5s
+✓ Running next.config.ts took 4.9s
 
 ○ Compiling / ...
- GET / 200 in 26.5s (next.js: 24.7s, application-code: 1785ms)
-✓ Compiled in 3.1s
- GET / 200 in 529ms (next.js: 138ms, application-code: 391ms)
-[browser] [client-db] sync save failed: ReferenceError: MAX_BACKUP_SIZE is not defined
-    at persistDBSync (src/lib/client-db.ts:632:24)
-    at Home.useEffect.handleBeforeUnload (src/app/page.tsx:53:22)
-  630 |   try {
-  631 |     const data = db.export()
-> 632 |     if (data.length <= MAX_BACKUP_SIZE) {
-      |                        ^
-  633 |       const b64 = uint8ToBase64(data)
-  634 |       localStorage.setItem(DB_BACKUP_KEY, b64)
-  635 |     } (src/lib/client-db.ts:638:13)
- GET / 200 in 435ms (next.js: 130ms, application-code: 305ms)
-✓ Compiled in 1031ms
- GET / 200 in 486ms (next.js: 199ms, application-code: 288ms)
-[browser] [client-db] sync save failed: ReferenceError: MAX_BACKUP_SIZE is not defined
-    at persistDBSync (src/lib/client-db.ts:632:24)
-    at Home.useEffect.handleBeforeUnload (src/app/page.tsx:53:22)
-  630 |   try {
-  631 |     const data = db.export()
-> 632 |     if (data.length <= MAX_BACKUP_SIZE) {
-      |                        ^
-  633 |       const b64 = uint8ToBase64(data)
-  634 |       localStorage.setItem(DB_BACKUP_KEY, b64)
-  635 |     } (src/lib/client-db.ts:638:13)
- GET / 200 in 252ms (next.js: 15ms, application-code: 237ms)
-✓ Compiled in 397ms
- GET / 200 in 77ms (next.js: 25ms, application-code: 52ms)
+ GET / 200 in 19.6s (next.js: 18.7s, application-code: 875ms)
 [browser] Realtime send() is automatically falling back to REST API. This behavior will be deprecated in the future. Please use httpSend() explicitly for REST delivery. (src/hooks/use-restaurant-sync.ts:171:33)
 [browser] Realtime send() is automatically falling back to REST API. This behavior will be deprecated in the future. Please use httpSend() explicitly for REST delivery. (src/hooks/use-restaurant-sync.ts:166:33)
 [browser] Realtime send() is automatically falling back to REST API. This behavior will be deprecated in the future. Please use httpSend() explicitly for REST delivery. (src/hooks/use-restaurant-sync.ts:176:33)
