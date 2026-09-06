@@ -146,3 +146,121 @@ export function downloadCsv(sheet: Sheet, filename: string): void {
   document.body.removeChild(a)
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
+
+// ─── PDF export ────────────────────────────────────────────────────────
+//
+// Generates a printable PDF using the browser's native print-to-PDF
+// capability via a hidden iframe. We build a self-contained HTML
+// document with print-optimized CSS (@page margins, table layout) and
+// trigger window.print() inside the iframe — the user picks "Save as
+// PDF" from the print dialog. This avoids shipping a heavy PDF library
+// (jsPDF/pdfmake are 300KB+ minified) and works on every platform
+// (Electron, Chrome, Firefox, Safari, mobile WebView).
+export function downloadPdf(sheets: Sheet[], filename: string): void {
+  const html: string[] = []
+  html.push('<!DOCTYPE html>')
+  html.push('<html xmlns="http://www.w3.org/1999/xhtml">')
+  html.push('<head><meta charset="UTF-8" />')
+  html.push('<title>Report</title>')
+  html.push('<style>')
+  // Print layout: A4 portrait, narrow margins, repeat table headers on
+  // each page. Tables get full-width with banded rows for readability.
+  html.push(`
+    @page { size: A4 portrait; margin: 12mm; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; color: #0f172a; margin: 0; padding: 0; font-size: 10pt; }
+    h2 { font-size: 13pt; margin: 18px 0 6px 0; color: #0EA5E9; border-bottom: 2px solid #0EA5E9; padding-bottom: 3px; }
+    h2:first-child { margin-top: 0; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+    th { background: #f1f5f9; color: #0f172a; font-weight: 700; text-align: left; padding: 5px 6px; border: 1px solid #cbd5e1; font-size: 9pt; }
+    td { padding: 4px 6px; border: 1px solid #e2e8f0; font-size: 9pt; vertical-align: top; }
+    tr:nth-child(even) td { background: #f8fafc; }
+    .report-meta { font-size: 8pt; color: #64748b; margin-bottom: 12px; }
+    .report-meta strong { color: #0f172a; }
+    @media print {
+      h2 { page-break-after: avoid; }
+      table { page-break-inside: auto; }
+      tr { page-break-inside: avoid; page-break-after: auto; }
+      thead { display: table-header-group; }
+    }
+  `)
+  html.push('</style></head><body>')
+  html.push(`<div class="report-meta"><strong>Generated:</strong> ${new Date().toLocaleString()}</div>`)
+  for (const sheet of sheets) {
+    const safeName = escapeXml(sheet.name)
+    html.push(`<h2>${safeName}</h2>`)
+    html.push('<table><thead><tr>')
+    for (const col of sheet.columns) {
+      html.push(`<th>${escapeXml(String(col))}</th>`)
+    }
+    html.push('</tr></thead><tbody>')
+    for (const row of sheet.rows) {
+      html.push('<tr>')
+      for (let i = 0; i < sheet.columns.length; i++) {
+        const cell = row[i]
+        if (cell === null || cell === undefined) {
+          html.push('<td></td>')
+        } else if (typeof cell === 'number') {
+          html.push(`<td style="text-align:right">${cell}</td>`)
+        } else {
+          html.push(`<td>${escapeXml(String(cell))}</td>`)
+        }
+      }
+      html.push('</tr>')
+    }
+    html.push('</tbody></table>')
+  }
+  html.push('</body></html>')
+
+  const iframe = document.createElement('iframe')
+  iframe.setAttribute('aria-hidden', 'true')
+  iframe.style.position = 'fixed'
+  iframe.style.right = '0'
+  iframe.style.bottom = '0'
+  iframe.style.width = '0'
+  iframe.style.height = '0'
+  iframe.style.border = '0'
+  iframe.style.opacity = '0'
+  document.body.appendChild(iframe)
+
+  const doc = iframe.contentWindow?.document
+  if (!doc) {
+    if (iframe.parentNode) iframe.parentNode.removeChild(iframe)
+    return
+  }
+  doc.open()
+  doc.write(html.join('\n'))
+  doc.close()
+
+  const w = iframe.contentWindow
+  if (!w) {
+    if (iframe.parentNode) iframe.parentNode.removeChild(iframe)
+    return
+  }
+
+  const cleanup = () => {
+    if (iframe.parentNode) iframe.parentNode.removeChild(iframe)
+  }
+
+  // Give the iframe a tick to lay out before calling print.
+  setTimeout(() => {
+    try {
+      w.focus()
+      const afterOnce = () => {
+        w.removeEventListener('afterprint', afterOnce)
+        cleanup()
+      }
+      w.addEventListener('afterprint', afterOnce)
+      w.print()
+      setTimeout(cleanup, 2000)
+    } catch (err) {
+      console.error('[downloadPdf] print failed:', err)
+      cleanup()
+    }
+  }, 150)
+
+  // The browser's "Save as PDF" dialog handles the actual file naming —
+  // the user can save with whatever name they like. We still keep the
+  // suggested filename around for logging purposes.
+  void filename
+}

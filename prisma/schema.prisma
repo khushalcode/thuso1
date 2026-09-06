@@ -110,6 +110,12 @@ model Order {
   notes       String?
   kotPrinted  Boolean  @default(false)
   billPrinted Boolean  @default(false)
+  // Daily-reset KOT/bill number — assigned the first time a KOT is printed
+  // for this order. The bill number used at bill-create time matches this
+  // number (per user requirement: "bill no same as kot number, every day
+  // start with 1000"). Reset to 1000 each new calendar day.
+  assignedBillNo   Int?
+  assignedBillDate String? // YYYY-MM-DD — used to detect day rollover
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -354,7 +360,11 @@ model ShopSetting {
   billFontSize      Int      @default(11) // base font size in px
   billHeaderAlign   String   @default("center") // left | center | right
   billExtraNote     String?
-  billAccentColor   String   @default("#f97316") // hex color for header accent
+  billAccentColor   String   @default("#0EA5E9") // 3-color scheme: light blue accent
+  billBoldText      Boolean  @default(true) // dark + bold text everywhere
+  billTextColor     String   @default("#000000") // pure black text
+  billPaperWidth    Int      @default(80) // thermal paper width in mm
+  billTemplate      String?  // JSON array of field keys for admin reorderable layout
 
   // KOT style customization
   kotShowLogo       Boolean  @default(true)
@@ -362,10 +372,14 @@ model ShopSetting {
   kotShowDateTime   Boolean  @default(true)
   kotShowTable      Boolean  @default(true)
   kotShowGuests     Boolean  @default(true)
-  kotFontSize       Int      @default(12)
+  kotFontSize       Int      @default(14) // larger than bill for kitchen readability
   kotHeaderAlign    String   @default("center")
-  kotAccentColor    String   @default("#f97316")
+  kotAccentColor    String   @default("#22C55E") // 3-color scheme: light green accent
   kotExtraNote      String?
+  kotPaperWidth     Int      @default(80)
+  kotBoldText       Boolean  @default(true) // dark + bold KOT text (mirrors bill)
+  kotTextColor      String   @default("#000000") // pure black
+  kotTemplate       String?  // JSON array of field keys for admin reorderable layout
 
   // Zomato Partner API integration
   zomatoEnabled    Boolean  @default(false)

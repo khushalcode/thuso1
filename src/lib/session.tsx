@@ -128,33 +128,53 @@ export function useSession() {
   return ctx
 }
 
-// Apply CSS variables for the active theme
+// Apply CSS variables for the active theme.
+//
+// The app uses a unified 3-color scheme (light blue + light green + black)
+// across all themes. The three "theme" keys below are kept for backward
+// compat with existing Shop.color values ('orange' | 'emerald' | 'violet')
+// but they now all render the SAME 3-color palette - orange maps to
+// light-blue-primary, emerald maps to light-green-primary, violet maps to
+// black-primary - so the visual identity stays consistent no matter which
+// theme a shop was originally created with.
 function applyTheme(theme: 'orange' | 'emerald' | 'violet') {
   const root = document.documentElement
   const themes = {
+    // 'orange' theme -> LIGHT BLUE primary (default)
     orange: {
-      '--brand-from': '#f97316',
-      '--brand-to': '#f43f5e',
-      '--brand-solid': '#f97316',
-      '--brand-soft': '#fff7ed',
-      '--brand-text': '#c2410c',
-      '--brand-ring': 'rgba(249, 115, 22, 0.35)',
+      '--brand-from': '#38BDF8',
+      '--brand-to': '#4ADE80',
+      '--brand-solid': '#0EA5E9',
+      '--brand-soft': '#ECFEFF',
+      '--brand-text': '#0369A1',
+      '--brand-ring': 'rgba(14, 165, 233, 0.35)',
+      '--brand-secondary': '#22C55E',
+      '--brand-secondary-soft': '#F0FDF4',
+      '--brand-dark': '#000000',
     },
+    // 'emerald' theme -> LIGHT GREEN primary
     emerald: {
-      '--brand-from': '#10b981',
-      '--brand-to': '#14b8a6',
-      '--brand-solid': '#10b981',
-      '--brand-soft': '#ecfdf5',
-      '--brand-text': '#047857',
-      '--brand-ring': 'rgba(16, 185, 129, 0.35)',
+      '--brand-from': '#4ADE80',
+      '--brand-to': '#38BDF8',
+      '--brand-solid': '#22C55E',
+      '--brand-soft': '#F0FDF4',
+      '--brand-text': '#15803D',
+      '--brand-ring': 'rgba(34, 197, 94, 0.35)',
+      '--brand-secondary': '#0EA5E9',
+      '--brand-secondary-soft': '#ECFEFF',
+      '--brand-dark': '#000000',
     },
+    // 'violet' theme -> BLACK primary (dark accent variant)
     violet: {
-      '--brand-from': '#8b5cf6',
-      '--brand-to': '#d946ef',
-      '--brand-solid': '#8b5cf6',
-      '--brand-soft': '#f5f3ff',
-      '--brand-text': '#6d28d9',
-      '--brand-ring': 'rgba(139, 92, 246, 0.35)',
+      '--brand-from': '#0f172a',
+      '--brand-to': '#0EA5E9',
+      '--brand-solid': '#000000',
+      '--brand-soft': '#F1F5F9',
+      '--brand-text': '#000000',
+      '--brand-ring': 'rgba(15, 23, 42, 0.35)',
+      '--brand-secondary': '#22C55E',
+      '--brand-secondary-soft': '#F0FDF4',
+      '--brand-dark': '#000000',
     },
   }
   const vars = themes[theme]

@@ -74,6 +74,9 @@ export async function PUT(req: NextRequest) {
       ...(b.kotHeaderAlign != null && { kotHeaderAlign: b.kotHeaderAlign }),
       ...(b.kotAccentColor != null && { kotAccentColor: b.kotAccentColor }),
       ...(b.kotExtraNote != null && { kotExtraNote: b.kotExtraNote || null }),
+      // KOT bold + dark text (mirrors the bill's controls)
+      ...(b.kotBoldText != null && { kotBoldText: b.kotBoldText }),
+      ...(b.kotTextColor != null && { kotTextColor: b.kotTextColor }),
       // Zomato API
       ...(b.zomatoEnabled != null && { zomatoEnabled: b.zomatoEnabled }),
       ...(b.zomatoApiKey !== undefined && { zomatoApiKey: b.zomatoApiKey || null }),

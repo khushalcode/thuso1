@@ -113,6 +113,8 @@ CREATE TABLE IF NOT EXISTS Orders (
   notes TEXT,
   kotPrinted INTEGER NOT NULL DEFAULT 0,
   billPrinted INTEGER NOT NULL DEFAULT 0,
+  assignedBillNo INTEGER,
+  assignedBillDate TEXT,
   createdAt TEXT NOT NULL DEFAULT (datetime('now')),
   updatedAt TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (shopId) REFERENCES Shop(id) ON DELETE CASCADE,
@@ -192,16 +194,24 @@ CREATE TABLE IF NOT EXISTS ShopSetting (
   billFontSize INTEGER NOT NULL DEFAULT 11,
   billHeaderAlign TEXT NOT NULL DEFAULT 'center',
   billExtraNote TEXT,
-  billAccentColor TEXT NOT NULL DEFAULT '#f97316',
+  billAccentColor TEXT NOT NULL DEFAULT '#0EA5E9',
+  billBoldText INTEGER NOT NULL DEFAULT 1,
+  billTextColor TEXT NOT NULL DEFAULT '#000000',
+  billPaperWidth INTEGER NOT NULL DEFAULT 80,
+  billTemplate TEXT,
   kotShowLogo INTEGER NOT NULL DEFAULT 1,
   kotShowWaiter INTEGER NOT NULL DEFAULT 1,
   kotShowDateTime INTEGER NOT NULL DEFAULT 1,
   kotShowTable INTEGER NOT NULL DEFAULT 1,
   kotShowGuests INTEGER NOT NULL DEFAULT 1,
-  kotFontSize INTEGER NOT NULL DEFAULT 12,
+  kotFontSize INTEGER NOT NULL DEFAULT 14,
   kotHeaderAlign TEXT NOT NULL DEFAULT 'center',
-  kotAccentColor TEXT NOT NULL DEFAULT '#f97316',
+  kotAccentColor TEXT NOT NULL DEFAULT '#22C55E',
   kotExtraNote TEXT,
+  kotPaperWidth INTEGER NOT NULL DEFAULT 80,
+  kotBoldText INTEGER NOT NULL DEFAULT 1,
+  kotTextColor TEXT NOT NULL DEFAULT '#000000',
+  kotTemplate TEXT,
   zomatoEnabled INTEGER NOT NULL DEFAULT 0,
   zomatoApiKey TEXT,
   zomatoRestaurantId TEXT,
@@ -414,11 +424,14 @@ function seedDatabase(database: Database) {
   // INSERT here and the picker will reappear.
   const shopId = genId()
   database.run('INSERT INTO Shop (id, name, code, color, address, phone, gstin, taxRate, currency) VALUES (?,?,?,?,?,?,?,?,?)',
-    [shopId, 'Spice Garden', 'SPICE', 'orange', '12 Marine Drive, Mumbai', '+91 98200 11223', '27SPICE2024G1Z9', 5, 'Rs.'])
+    [shopId, 'Spice Garden', 'SPICE', 'blue', '12 Marine Drive, Mumbai', '+91 98200 11223', '27SPICE2024G1Z9', 5, 'Rs.'])
 
-  // Seed settings for the single shop
-  database.run(`INSERT INTO ShopSetting (id, shopId, shopName, billAccentColor, kotAccentColor) VALUES (?,?,?,?,?)`,
-    [genId(), shopId, 'Spice Garden', '#f97316', '#f97316'])
+  // Seed settings for the single shop — new 3-color scheme:
+  //   • bill accent  = light blue  (#0EA5E9 / sky-500)
+  //   • KOT accent   = light green (#22C55E / green-500)
+  //   • text color   = pure black  (#000000) — dark + bold by default
+  database.run(`INSERT INTO ShopSetting (id, shopId, shopName, billAccentColor, kotAccentColor, billTextColor, billBoldText) VALUES (?,?,?,?,?,?,?)`,
+    [genId(), shopId, 'Spice Garden', '#0EA5E9', '#22C55E', '#000000', 1])
 
   // Seed tables (0=Direct Counter + 1-10)
   database.run('INSERT INTO RestaurantTable (id, shopId, number, name, capacity, status) VALUES (?,?,?,?,?,?)',
@@ -513,6 +526,20 @@ function migrateSchema(database: Database) {
   addColumn('ShopSetting', 'silentPrint', 'INTEGER NOT NULL DEFAULT 0')
   addColumn('ShopSetting', 'printHeaderText', 'TEXT')
   addColumn('ShopSetting', 'printFooterText', 'TEXT')
+  // ─── New columns for bold text, dark color, per-template paper width,
+  //     and admin-editable template layouts (ruler + draggable fields).
+  addColumn('ShopSetting', 'billBoldText', 'INTEGER NOT NULL DEFAULT 1')
+  addColumn('ShopSetting', 'billTextColor', "TEXT NOT NULL DEFAULT '#000000'")
+  addColumn('ShopSetting', 'billPaperWidth', 'INTEGER NOT NULL DEFAULT 80')
+  addColumn('ShopSetting', 'billTemplate', 'TEXT')
+  addColumn('ShopSetting', 'kotPaperWidth', 'INTEGER NOT NULL DEFAULT 80')
+  addColumn('ShopSetting', 'kotTemplate', 'TEXT')
+  // ─── KOT bold + dark text (mirrors the bill's controls) ───
+  addColumn('ShopSetting', 'kotBoldText', 'INTEGER NOT NULL DEFAULT 1')
+  addColumn('ShopSetting', 'kotTextColor', "TEXT NOT NULL DEFAULT '#000000'")
+  // ─── Daily-reset KOT/Bill number assignment per order ───
+  addColumn('Orders', 'assignedBillNo', 'INTEGER')
+  addColumn('Orders', 'assignedBillDate', 'TEXT')
   addColumn('Orders', 'customerName', 'TEXT')
   addColumn('Orders', 'type', "TEXT NOT NULL DEFAULT 'dine_in'")
   addColumn('MenuItem', 'image', 'TEXT')

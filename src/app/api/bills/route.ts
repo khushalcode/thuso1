@@ -75,9 +75,19 @@ export async function POST(req: NextRequest) {
   const taxAmount = subtotal * (Number(taxRate) / 100)
   const total = Math.max(0, subtotal + taxAmount + Number(serviceCharge) - Number(discount))
 
-  // Pick next bill number for this shop
-  const last = await db.bill.findFirst({ where: { shopId }, orderBy: { billNo: 'desc' } })
-  const billNo = last ? last.billNo + 1 : 1001
+  // ─── Daily-reset bill number ──────────────────────────────────────────
+  // Bill numbers RESET to 1000 every day. We look at the highest billNo
+  // paid TODAY — if there are none yet today, we start at 1000.
+  // This is a fallback for the server-side route; the client-side
+  // bills.create() in client-data.ts uses the order's assignedBillNo
+  // (which matches the KOT number) when available.
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const last = await db.bill.findFirst({
+    where: { shopId, paidAt: { gte: today } },
+    orderBy: { billNo: 'desc' },
+  })
+  const billNo = last ? last.billNo + 1 : 1000
 
   const bill = await db.$transaction(async (tx) => {
     const created = await tx.bill.create({

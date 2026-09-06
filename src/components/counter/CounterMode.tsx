@@ -215,6 +215,11 @@ export default function CounterMode({ onExit, directMode, currentMode, onNavigat
       setGuests(existingOrder?.guests || 1)
       setWaiterName(existingOrder?.waiterName || '')
       setOrderNotes(existingOrder?.notes || '')
+      // Restore the order's previously-assigned KOT number (= bill number)
+      // so a re-print shows the right number even after navigating away.
+      const assignedNo = Number((existingOrder as any)?.assignedBillNo) || 0
+      setKotNo(assignedNo)
+      setPrintedItemIds(new Set((existingOrder?.items || []).filter((i: any) => i.status !== 'cancelled').map((i: any) => i.id)))
     } else {
       // Create new open order
       try {
@@ -385,6 +390,12 @@ export default function CounterMode({ onExit, directMode, currentMode, onNavigat
   }
 
   // ----- Send to kitchen (KOT) -----
+  // The KOT number assigned to the order is the SAME as the bill number it
+  // will eventually get (per user requirement: "bill no same as kot number,
+  // every day start with 1000"). The /api/orders/[id]/send handler calls
+  // orders.assignKotNumber() on the server side, so by the time we get the
+  // response back the order has its assignedBillNo stamped. We use THAT
+  // number for the KOT receipt instead of a per-order "1, 2, 3..." counter.
   const sendToKitchen = async () => {
     if (!order) return
     setBusy(true)
@@ -423,8 +434,12 @@ export default function CounterMode({ onExit, directMode, currentMode, onNavigat
       setPrintedItemIds(newPrintedSet)
       setKotItemsToPrint(itemsToPrint)
 
-      const nextKotNo = (kotNo || 0) + 1
-      setKotNo(nextKotNo)
+      // ─── KOT number = order's assignedBillNo (= future bill number) ───
+      // The server stamps this on the order the first time a KOT is sent.
+      // On reprints we keep showing the same number.
+      const assignedNo = Number(data.order.assignedBillNo) || 0
+      const effectiveKotNo = assignedNo > 0 ? assignedNo : kotNo
+      setKotNo(effectiveKotNo)
       setShowKOT(true)
 
       // Broadcast to kitchen — only new items on reprint
@@ -444,9 +459,9 @@ export default function CounterMode({ onExit, directMode, currentMode, onNavigat
       await loadTables()
 
       if (isNewPrint) {
-        toast.success('KOT sent to kitchen')
+        toast.success(`KOT #${effectiveKotNo} sent to kitchen`)
       } else {
-        toast.success(`Re-printed KOT with ${itemsToPrint.length} new item(s)`)
+        toast.success(`Re-printed KOT #${effectiveKotNo} with ${itemsToPrint.length} new item(s)`)
       }
     } finally {
       setBusy(false)

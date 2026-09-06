@@ -15,7 +15,6 @@ import {
   Eye,
   Loader2,
   IndianRupee,
-  Trash2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -29,10 +28,6 @@ import {
   SelectContent,
   SelectItem,
 } from '@/components/ui/select'
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose,
-} from '@/components/ui/dialog'
-import { toast } from 'sonner'
 import { PrintPreview } from '@/components/shared/PrintPreview'
 import { BillReceipt } from '@/components/shared/Receipts'
 import { useShopFetch } from '@/hooks/use-shop-fetch'
@@ -48,7 +43,7 @@ interface HistoryModeProps {
 }
 
 export default function HistoryMode({ onExit, currentMode, onNavigate }: HistoryModeProps) {
-  const { currentShop, user } = useSession()
+  const { currentShop } = useSession()
   const shopFetch = useShopFetch()
   const [bills, setBills] = useState<Bill[]>([])
   const [loading, setLoading] = useState(true)
@@ -59,12 +54,11 @@ export default function HistoryMode({ onExit, currentMode, onNavigate }: History
   const [summary, setSummary] = useState({ totalRevenue: 0, totalBills: 0, byPayment: {} as Record<string, number> })
   const [previewBill, setPreviewBill] = useState<Bill | null>(null)
   const [settings, setSettings] = useState<any>(null)
-  // Delete-bill dialog state. When set, shows a reason prompt; on confirm
-  // we call DELETE /api/bills/[id] which archives the bill into DeletedBill
-  // and removes it. After that the bills list is refreshed.
-  const [delTarget, setDelTarget] = useState<Bill | null>(null)
-  const [delReason, setDelReason] = useState('')
-  const [deleting, setDeleting] = useState(false)
+  // Bill deletion has been REMOVED from the entire system per user request.
+  // The History page now only shows bills + lets you reprint them — no
+  // delete button, no reason dialog, no audit snapshot. The deletedBills
+  // table is kept for backward compat with old databases but no new rows
+  // are ever written.
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -93,39 +87,6 @@ export default function HistoryMode({ onExit, currentMode, onNavigate }: History
   useEffect(() => {
     shopFetch('/api/settings').then((r) => r.json()).then((d) => setSettings(d.settings)).catch(() => {})
   }, [shopFetch, currentShop?.id])
-
-  // Delete (void) a bill. Archives it into DeletedBill via the API, then
-  // reloads the bills list so the row disappears. The user is required to
-  // provide a reason so the audit trail is meaningful.
-  const handleDeleteBill = async () => {
-    if (!delTarget) return
-    setDeleting(true)
-    try {
-      const res = await shopFetch(`/api/bills/${delTarget.id}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          reason: delReason.trim() || 'No reason provided',
-          deletedBy: user?.name || 'unknown',
-          deletedById: user?.id || null,
-        }),
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        toast.error(data?.error || 'Failed to delete bill')
-        return
-      }
-      toast.success(`Bill #${delTarget.billNo} deleted (₹${delTarget.total.toFixed(2)} moved to Deleted Bills)`)
-      setDelTarget(null)
-      setDelReason('')
-      load()
-    } catch (e) {
-      console.error('[HistoryMode] delete failed:', e)
-      toast.error('Failed to delete bill')
-    } finally {
-      setDeleting(false)
-    }
-  }
 
   const todayRevenue = summary.totalRevenue
 
@@ -279,19 +240,7 @@ export default function HistoryMode({ onExit, currentMode, onNavigate }: History
                       <td className="px-4 py-3 text-right">
                         <div className="flex items-center justify-end gap-1">
                           <Button size="sm" variant="ghost" onClick={() => setPreviewBill(b)}>
-                            <Eye className="w-3.5 h-3.5 mr-1" /> View
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="text-rose-500 hover:text-rose-600"
-                            title="Delete / void this bill"
-                            onClick={() => {
-                              setDelTarget(b)
-                              setDelReason('')
-                            }}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Eye className="w-3.5 h-3.5 mr-1" /> View / Reprint
                           </Button>
                         </div>
                       </td>
@@ -326,60 +275,6 @@ export default function HistoryMode({ onExit, currentMode, onNavigate }: History
       >
         {previewBill && <BillReceipt bill={previewBill} style={settings} />}
       </PrintPreview>
-
-      {/* Delete / void bill dialog. Requires a reason so the audit trail
-          is meaningful. The bill is archived into DeletedBill on confirm,
-          its amount shows up in Money Out → Deleted Bills section. */}
-      <Dialog open={!!delTarget} onOpenChange={(o) => { if (!o && !deleting) { setDelTarget(null); setDelReason('') } }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete Bill #{delTarget?.billNo}?</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 text-sm">
-              <div className="flex items-center justify-between">
-                <span className="text-slate-600">Bill amount</span>
-                <span className="font-bold text-rose-700">{formatCurrency(delTarget?.total || 0)}</span>
-              </div>
-              <div className="flex items-center justify-between mt-1">
-                <span className="text-slate-600">Table</span>
-                <span className="font-medium">Table {delTarget?.tableNumber}</span>
-              </div>
-              <div className="flex items-center justify-between mt-1">
-                <span className="text-slate-600">Payment</span>
-                <span className="font-medium uppercase">{delTarget?.paymentMode}</span>
-              </div>
-            </div>
-            <p className="text-sm text-slate-600">
-              This will <strong>permanently remove</strong> the bill and reverse its
-              income entry. The amount will appear in <strong>Money Out → Deleted Bills</strong>
-              {' '}and reduce today's net cash flow.
-            </p>
-            <div className="space-y-1.5">
-              <Label className="text-xs">Reason for deletion (required)</Label>
-              <Input
-                value={delReason}
-                onChange={(e) => setDelReason(e.target.value)}
-                placeholder="e.g. Bill generated by mistake, customer cancelled, payment reversed…"
-                autoFocus
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <DialogClose asChild>
-              <Button variant="outline" disabled={deleting}>Cancel</Button>
-            </DialogClose>
-            <Button
-              variant="destructive"
-              disabled={deleting || !delReason.trim()}
-              onClick={handleDeleteBill}
-            >
-              {deleting ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Trash2 className="w-4 h-4 mr-1" />}
-              Delete Bill
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

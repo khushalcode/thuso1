@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   BarChart3, TrendingUp, Receipt, Wallet, Download, Filter, Package,
-  CreditCard, FileJson, FileSpreadsheet, FileText, ChevronDown, ChevronUp,
+  CreditCard, FileJson, FileSpreadsheet, FileText, FileDown, ChevronDown, ChevronUp,
   Search, Calendar, Users, Tag, IndianRupee, ShoppingBag, AlertCircle,
 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -19,7 +19,7 @@ import {
 } from 'recharts'
 import { formatCurrency, formatDateTime } from '@/lib/format'
 import { useShopFetch } from '@/hooks/use-shop-fetch'
-import { downloadExcel, downloadCsv, type Sheet } from '@/lib/excel-export'
+import { downloadExcel, downloadCsv, downloadPdf, type Sheet } from '@/lib/excel-export'
 
 const PIE_COLORS = ['#f97316', '#10b981', '#8b5cf6', '#ef4444', '#3b82f6', '#0f172a', '#eab308']
 
@@ -211,7 +211,6 @@ export default function ReportsPage() {
         ['Avg Bill', s.avgBill],
         ['Total Expenses', s.totalExpenses],
         ['Total Purchases', s.totalPurchases],
-        ['Deleted Bill Amount', s.deletedBillAmount],
         ['Net Profit', s.netProfit],
         ['Period', period],
         ['Generated At', new Date().toISOString().replace('T', ' ').slice(0, 19)],
@@ -308,6 +307,119 @@ export default function ReportsPage() {
     downloadExcel(sheets, `sales-report-${period}-${dateStr}`)
   }
 
+  // ─── PDF export ───
+  // Reuses the same sheet builder as Excel export, but renders to a
+  // print-ready PDF via the browser's native print-to-PDF. The user
+  // picks "Save as PDF" from the print dialog. This gives accountants
+  // a clean printable report without needing Excel.
+  const handleExportPdf = () => {
+    const sheets: Sheet[] = []
+    sheets.push({
+      name: 'Summary',
+      columns: ['Metric', 'Value'],
+      rows: [
+        ['Sales Revenue', formatCurrency(s.salesRevenue)],
+        ['Bill Count', s.billCount],
+        ['Items Sold', s.totalItemsSold || 0],
+        ['Avg Bill', formatCurrency(s.avgBill)],
+        ['Total Expenses', formatCurrency(s.totalExpenses)],
+        ['Total Purchases', formatCurrency(s.totalPurchases)],
+        ['Net Profit', formatCurrency(s.netProfit)],
+        ['Period', period],
+        ['Generated At', new Date().toLocaleString()],
+      ],
+    })
+    if (bills.length > 0) {
+      sheets.push({
+        name: 'Bills',
+        columns: ['Bill No', 'Date', 'Table', 'Waiter', 'Customer', 'Items', 'Payment', 'Subtotal', 'Tax', 'Discount', 'Service', 'Total'],
+        rows: bills.map((b: any) => [
+          b.billNo,
+          (b.paidAt || '').slice(0, 19).replace('T', ' '),
+          b.tableNumber,
+          b.order?.waiterName || '',
+          b.order?.customerName || '',
+          b.order?.items?.filter((i: any) => i.status !== 'cancelled').length || 0,
+          (b.paymentMode || '').toUpperCase(),
+          formatCurrency(Number(b.subtotal) || 0),
+          formatCurrency(Number(b.taxAmount) || 0),
+          formatCurrency(Number(b.discount) || 0),
+          formatCurrency(Number(b.serviceCharge) || 0),
+          formatCurrency(Number(b.total) || 0),
+        ]),
+      })
+    }
+    if (itemizedRows.length > 0) {
+      sheets.push({
+        name: 'Itemized Sales',
+        columns: ['Bill No', 'Date', 'Table', 'Waiter', 'Item', 'Category', 'Qty', 'Price', 'Line Total', 'Bill Total', 'Payment'],
+        rows: itemizedRows.map((r: any) => [
+          r.billNo,
+          (r.paidAt || '').slice(0, 19).replace('T', ' '),
+          r.tableNumber,
+          r.waiterName || '',
+          r.itemName,
+          r.category,
+          r.quantity,
+          formatCurrency(r.price),
+          formatCurrency(r.lineTotal),
+          formatCurrency(r.billTotal),
+          (r.paymentMode || '').toUpperCase(),
+        ]),
+      })
+    }
+    if ((data.topItems || []).length > 0) {
+      sheets.push({
+        name: 'Item-Wise Sales',
+        columns: ['Item Name', 'Category', 'Qty Sold', 'Avg Price', 'Revenue', '% of Sales'],
+        rows: (data.topItems || []).map((it: any) => [
+          it.name,
+          it.category || 'General',
+          Number(it.qty) || 0,
+          formatCurrency(it.qty > 0 ? Number((it.revenue / it.qty).toFixed(2)) : 0),
+          formatCurrency(Number(it.revenue) || 0),
+          s.salesRevenue > 0 ? Number(((it.revenue / s.salesRevenue) * 100).toFixed(1)) : 0,
+        ]),
+      })
+    }
+    if ((data.byCategory || []).length > 0) {
+      sheets.push({
+        name: 'By Category',
+        columns: ['Category', 'Qty Sold', 'Revenue'],
+        rows: (data.byCategory || []).map((c: any) => [c.name, Number(c.qty) || 0, formatCurrency(Number(c.revenue) || 0)]),
+      })
+    }
+    if ((data.dailyBreakdown || []).length > 0) {
+      sheets.push({
+        name: 'Daily Breakdown',
+        columns: ['Date', 'Sales', 'Expenses', 'Bill Count'],
+        rows: (data.dailyBreakdown || []).map((d: any) => [
+          d.date, formatCurrency(Number(d.sales || 0) || 0), formatCurrency(Number(d.expenses || 0) || 0), Number(d.count || 0) || 0,
+        ]),
+      })
+    }
+    const paymentEntries = Object.entries(data.byPayment || {})
+    if (paymentEntries.length > 0) {
+      sheets.push({
+        name: 'Payment Modes',
+        columns: ['Mode', 'Total', 'Count'],
+        rows: paymentEntries.map(([mode, v]: [string, any]) => [
+          mode.toUpperCase(), formatCurrency(Number(v.total || 0) || 0), Number(v.count || 0) || 0,
+        ]),
+      })
+    }
+    const expenseEntries = Object.entries(data.expenseByCategory || {})
+    if (expenseEntries.length > 0) {
+      sheets.push({
+        name: 'Expenses by Category',
+        columns: ['Category', 'Amount'],
+        rows: expenseEntries.map(([cat, amt]: [string, any]) => [cat, formatCurrency(Number(amt) || 0)]),
+      })
+    }
+    const dateStr = new Date().toISOString().split('T')[0]
+    downloadPdf(sheets, `sales-report-${period}-${dateStr}`)
+  }
+
   const handleExportCsv = () => {
     // Export the itemized sales as CSV — most useful for accountants
     const sheet: Sheet = {
@@ -361,6 +473,9 @@ export default function ReportsPage() {
           </Button>
           <Button variant="outline" size="sm" onClick={handleExportExcel} className="border-emerald-300 text-emerald-700 hover:bg-emerald-50">
             <FileSpreadsheet className="w-3.5 h-3.5 mr-1" /> Excel
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleExportPdf} className="border-rose-300 text-rose-700 hover:bg-rose-50">
+            <FileDown className="w-3.5 h-3.5 mr-1" /> PDF
           </Button>
           <Button variant="outline" size="sm" onClick={handleExportJson}>
             <FileJson className="w-3.5 h-3.5 mr-1" /> JSON

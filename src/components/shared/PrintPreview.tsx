@@ -106,7 +106,11 @@ export function PrintPreview({ open, onClose, title, subtitle, children, width =
           <style>
             * { box-sizing: border-box; }
             body { font-family: 'Courier New', monospace; margin: 0; padding: 8px; color: #000; }
-            .receipt { width: ${width}px; margin: 0 auto; }
+            /* ─── Dark + bold text everywhere (per user request) ─── */
+            /* All receipt text prints BOLD + BLACK so it's maximally
+               legible on thermal paper. Accent color is only used for
+               divider lines + the shop-name header. */
+            .receipt { width: ${width}px; margin: 0 auto; color: #000; font-weight: bold; }
             .center { text-align: center; }
             .right { text-align: right; }
             .bold { font-weight: bold; }
@@ -116,9 +120,9 @@ export function PrintPreview({ open, onClose, title, subtitle, children, width =
             .xs { font-size: 10px; }
             .divider { border-top: 1px dashed #000; margin: 6px 0; }
             .double { border-top: 2px solid #000; margin: 6px 0; }
-            .row { display: flex; justify-content: space-between; gap: 8px; }
-            table { width: 100%; border-collapse: collapse; font-size: 11px; }
-            th, td { text-align: left; padding: 2px 0; }
+            .row { display: flex; justify-content: space-between; gap: 8px; font-weight: bold; }
+            table { width: 100%; border-collapse: collapse; font-size: 11px; font-weight: bold; }
+            th, td { text-align: left; padding: 2px 0; font-weight: bold; color: #000; }
             th { border-bottom: 1px solid #000; }
             @media print {
               @page { margin: 4mm; }

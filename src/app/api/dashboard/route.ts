@@ -34,7 +34,6 @@ export async function GET(req: Request) {
     lowStockItems,
     occupiedTables,
     totalTables,
-    todayDeletedBills,
   ] = await Promise.all([
     db.bill.aggregate({ _sum: { total: true }, _count: true, where: { shopId, paidAt: { gte: today } } }),
     db.bill.aggregate({ _sum: { total: true }, _count: true, where: { shopId, paidAt: { gte: monthStart } } }),
@@ -59,13 +58,6 @@ export async function GET(req: Request) {
     db.menuItem.findMany({ where: { shopId, stock: { lte: 5 } }, orderBy: { stock: 'asc' }, take: 5 }),
     db.restaurantTable.count({ where: { shopId, status: 'occupied', number: { gt: 0 } } }),
     db.restaurantTable.count({ where: { shopId, number: { gt: 0 } } }),
-    // Deleted bills attributed by originalPaidAt so a bill paid yesterday
-    // but voided today still counts against yesterday's revenue.
-    db.deletedBill.aggregate({
-      _sum: { total: true },
-      _count: true,
-      where: { shopId, originalPaidAt: { gte: today } },
-    }),
   ])
 
   const dayMap = new Map<string, number>()
@@ -98,11 +90,11 @@ export async function GET(req: Request) {
   })
   const topItems = Array.from(itemMap.values()).sort((a, b) => b.qty - a.qty).slice(0, 5)
 
-  // Total of bills voided today (attributed by original paidAt) — exposed
-  // as its own metric AND subtracted from net cash flow because a voided
-  // sale is effectively money that left the till.
-  const deletedBillAmount = todayDeletedBills._sum.total || 0
-  const deletedBillCount = todayDeletedBills._count || 0
+  // Total of bills voided today — always 0 now that bill deletion has been
+  // removed from the system. We keep the field in the response for
+  // backward-compat with the dashboard UI.
+  const deletedBillAmount = 0
+  const deletedBillCount = 0
 
   const cashFlow = {
     salesIn: todayBills._sum.total || 0,

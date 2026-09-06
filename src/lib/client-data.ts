@@ -289,6 +289,31 @@ export const orders = {
     if (updated) trackUpsert('Orders', updated)
     return updated
   },
+  /**
+   * Assign the daily KOT number to this order if it doesn't already have one
+   * for today. This is the SAME number that will become the bill number
+   * when the order is billed (per user requirement: "bill no same as kot
+   * number, every day start with 1000").
+   *
+   * Returns the assigned number (or the existing one if already assigned
+   * for today).
+   */
+  assignKotNumber(shopId: string, orderId: string): number {
+    const order = this.getById(orderId)
+    const today = todayDateStr()
+    if (order?.assignedBillNo && order?.assignedBillDate === today) {
+      return Number(order.assignedBillNo)
+    }
+    // Grab the next daily number. nextDailyBillNo() looks at both Bills
+    // paid today AND orders already assigned a number today, so we can't
+    // double-allocate.
+    const nextNo = nextDailyBillNo(shopId)
+    execute('UPDATE Orders SET assignedBillNo = ?, assignedBillDate = ? WHERE id = ?',
+      [nextNo, today, orderId])
+    const updated = this.getById(orderId)
+    if (updated) trackUpsert('Orders', updated)
+    return nextNo
+  },
   updateStatus(id: string, status: string) {
     execute('UPDATE Orders SET status = ? WHERE id = ?', [status, id])
     const updated = this.getById(id)
@@ -343,6 +368,43 @@ export const orders = {
 // ═══════════════════════════════════════
 //  BILLS
 // ═══════════════════════════════════════
+//
+// Bill numbering rules (per user request):
+//   • Every day the sequence RESETS to 1000.
+//   • The bill number for an order is the SAME as that order's KOT number.
+//   • The KOT number is assigned the first time KOT is printed for an order
+//     (orders.assignKotNumber below), and stored on Orders.assignedBillNo.
+//   • When the bill is generated, bills.create() uses the order's
+//     assignedBillNo as the billNo (falling back to the next daily number
+//     if the order somehow has none — defensive).
+//
+// "Daily" means "same calendar day in the shop's local timezone". We
+// compare ISO date strings (YYYY-MM-DD) so a bill paid at 11:59 PM and
+// the next one paid at 12:01 AM correctly get different sequences.
+function todayDateStr(): string {
+  const d = new Date()
+  return d.toISOString().slice(0, 10)
+}
+
+function nextDailyBillNo(shopId: string): number {
+  const today = todayDateStr()
+  // Look at BOTH Bills paid today AND Orders that already have an
+  // assignedBillNo for today (so an order with a printed KOT but no
+  // bill yet still "owns" its number — we don't hand the same number
+  // out twice).
+  const lastBill = queryOne<any>(
+    `SELECT billNo FROM Bill WHERE shopId = ? AND substr(paidAt, 1, 10) = ? ORDER BY billNo DESC LIMIT 1`,
+    [shopId, today]
+  )
+  const lastAssigned = queryOne<any>(
+    `SELECT assignedBillNo FROM Orders WHERE shopId = ? AND assignedBillDate = ? ORDER BY assignedBillNo DESC LIMIT 1`,
+    [shopId, today]
+  )
+  const billMax = lastBill?.billNo || 999
+  const assignMax = lastAssigned?.assignedBillNo || 999
+  return Math.max(billMax, assignMax) + 1
+}
+
 export const bills = {
   list(shopId: string, filters?: { from?: string; to?: string; table?: number; q?: string }) {
     let sql = 'SELECT * FROM Bill WHERE shopId = ?'
@@ -370,13 +432,36 @@ export const bills = {
     bill.order = orders.getById(row.orderId)
     return bill
   },
+  /**
+   * Next bill number for the shop, DAILY-RESET (starts at 1000 each day).
+   * Kept for callers that just want to *preview* the next number
+   * (e.g. BillingDialog header). The actual bill is created with
+   * bills.create() which uses the order's assigned KOT number.
+   */
   nextNo(shopId: string) {
-    const last = queryOne<any>('SELECT billNo FROM Bill WHERE shopId = ? ORDER BY billNo DESC LIMIT 1', [shopId])
-    return last?.billNo ? last.billNo + 1 : 1001
+    return nextDailyBillNo(shopId)
   },
   create(shopId: string, orderId: string, tableNumber: number, subtotal: number, taxRate: number, taxAmount: number, discount: number, serviceCharge: number, total: number, paymentMode: string) {
     const id = genId()
-    const billNo = this.nextNo(shopId)
+    // ─── Bill number = order's assigned KOT number (user requirement:
+    //     "bill no same as kot number, every day start with 1000").
+    //     If the order has no assigned KOT number yet (defensive — e.g.
+    //     Save Order without ever printing a KOT), grab the next daily
+    //     number and stamp it on the order so the audit trail is
+    //     consistent.
+    const order = orders.getById(orderId)
+    let billNo: number
+    if (order?.assignedBillNo && order?.assignedBillDate === todayDateStr()) {
+      billNo = Number(order.assignedBillNo)
+    } else {
+      billNo = nextDailyBillNo(shopId)
+      try {
+        execute('UPDATE Orders SET assignedBillNo = ?, assignedBillDate = ? WHERE id = ?',
+          [billNo, todayDateStr(), orderId])
+      } catch (e) {
+        console.warn('[bills.create] could not stamp assignedBillNo on order:', e)
+      }
+    }
     // ─── BUG FIX: Many callers (e.g. CounterMode.confirmBill) only pass
     // { taxRate, discount, serviceCharge, paymentMode } in the POST body —
     // they do NOT pass subtotal / taxAmount / total. The use-shop-fetch
@@ -388,7 +473,6 @@ export const bills = {
     // only if the recomputed subtotal is also 0 (defensive, shouldn't happen
     // for a real order). The caller's taxRate / discount / serviceCharge are
     // still honored.
-    const order = orders.getById(orderId)
     const activeItems = (order?.items || []).filter((i: any) => i.status !== 'cancelled')
     const computedSubtotal = activeItems.reduce((s, i) => s + Number(i.price) * Number(i.quantity), 0)
     const safeSubtotal = computedSubtotal > 0 ? computedSubtotal : Number(subtotal) || 0
@@ -419,128 +503,32 @@ export const bills = {
   },
 
   /**
-   * Delete (void) a bill.
-   *
-   * Before removing the Bill row we capture a full snapshot into the
-   * DeletedBill table — this preserves an audit trail and lets the
-   * dashboard / reports show "Deleted Bill Amount" as its own metric
-   * and the Money Out page list every voided bill.
-   *
-   * We also:
-   *   • reverse the auto-added MoneyIn row that bills.create() inserted
-   *     (matched by description "Bill #<billNo> (Table <n>)") so the
-   *     cash flow ties out — otherwise the deleted sale would still be
-   *     counted as income
-   *   • free the table if it was still tied to this order
-   *   • track the deletion in the audit log
+   * Bill deletion has been REMOVED from the entire system per user request
+   * ("puro bill delete system hatai d"). The endpoint and UI button are
+   * gone; this stub keeps the call site in use-shop-fetch.ts returning a
+   * clean 405 so any stray DELETE request fails loudly without crashing.
    */
-  delete(id: string, opts?: { reason?: string; deletedBy?: string; deletedById?: string }) {
-    const bill = queryOne<any>('SELECT * FROM Bill WHERE id = ?', [id])
-    if (!bill) return false
-
-    const now = new Date().toISOString()
-    const deletedId = genId()
-
-    // 1) Archive a full snapshot into DeletedBill BEFORE deleting the bill.
-    execute(
-      `INSERT INTO DeletedBill
-        (id, shopId, originalBillId, billNo, orderId, tableNumber, subtotal, taxRate, taxAmount, discount, serviceCharge, total, paymentMode, paymentStatus, originalPaidAt, originalCreatedAt, reason, deletedBy, deletedById, deletedAt)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [
-        deletedId, bill.shopId, bill.id, bill.billNo, bill.orderId, bill.tableNumber,
-        bill.subtotal || 0, bill.taxRate || 0, bill.taxAmount || 0,
-        bill.discount || 0, bill.serviceCharge || 0, bill.total || 0,
-        bill.paymentMode || 'cash', bill.paymentStatus || 'paid',
-        bill.paidAt, bill.createdAt,
-        opts?.reason || null, opts?.deletedBy || null, opts?.deletedById || null, now,
-      ]
-    )
-
-    // 2) Reverse the auto-added MoneyIn row from when the bill was created.
-    //    bills.create() inserts a MoneyIn with description `Bill #<n> (Table <n>)`
-    //    and source = 'Sale'. We match on that description so we only remove
-    //    the income that was tied to THIS bill, nothing else.
-    try {
-      execute(
-        `DELETE FROM MoneyIn
-         WHERE shopId = ? AND source = 'Sale'
-           AND description = ?
-           AND date >= ?`,
-        [bill.shopId, `Bill #${bill.billNo} (Table ${bill.tableNumber})`, bill.paidAt]
-      )
-    } catch (e) {
-      console.warn('[bills.delete] MoneyIn reversal failed (non-fatal):', e)
-    }
-
-    // 3) Free the table if it still points at this order.
-    try {
-      execute(
-        'UPDATE RestaurantTable SET status = ?, currentOrderId = NULL WHERE currentOrderId = ?',
-        ['available', bill.orderId]
-      )
-    } catch (e) {
-      console.warn('[bills.delete] table free failed (non-fatal):', e)
-    }
-
-    // 4) Delete the bill itself. OrderItem + Order cascade via FK ON DELETE CASCADE.
-    execute('DELETE FROM Bill WHERE id = ?', [id])
-
-    // 5) Audit log entry.
-    try {
-      execute(
-        `INSERT INTO AuditLog (id, shopId, userId, userName, action, details, createdAt)
-         VALUES (?,?,?,?,?,?,?)`,
-        [
-          genId(), bill.shopId, opts?.deletedById || null, opts?.deletedBy || null,
-          'bill_delete',
-          JSON.stringify({
-            billId: bill.id, billNo: bill.billNo, total: bill.total,
-            tableNumber: bill.tableNumber, paymentMode: bill.paymentMode,
-            reason: opts?.reason || null,
-          }),
-          now,
-        ]
-      )
-    } catch (e) {
-      console.warn('[bills.delete] audit log failed (non-fatal):', e)
-    }
-
-    // 6) Track sync. We push the deleted bill row to Supabase so other
-    //    devices converge, and also push the DeletedBill snapshot.
-    trackDelete('Bill', id)
-    const snap = queryOne('SELECT * FROM DeletedBill WHERE id = ?', [deletedId])
-    if (snap) trackUpsert('DeletedBill', snap)
-
-    return true
+  delete(_id: string, _opts?: { reason?: string; deletedBy?: string; deletedById?: string }) {
+    return false
   },
 }
 
 // ═══════════════════════════════════════
 //  DELETED BILLS (voided bills archive)
 // ═══════════════════════════════════════
+//
+// Bill deletion has been REMOVED from the entire system per user request
+// ("puro bill delete system hatai d"). The DeletedBill table itself is
+// kept for backward-compat with existing databases (so old rows from
+// before the removal don't crash queries), but no NEW rows are ever
+// written. These helpers now return empty / zero so the dashboard,
+// reports, and Money Out page simply show "no deleted bills".
 export const deletedBills = {
-  /**
-   * List all deleted bills for a shop, newest deletion first.
-   * Optionally filter by date range (matched on originalPaidAt so the
-   * bill is attributed to the day it was actually paid, not deleted).
-   */
-  list(shopId: string, filters?: { from?: string; to?: string }) {
-    let sql = 'SELECT * FROM DeletedBill WHERE shopId = ?'
-    const params: any[] = [shopId]
-    if (filters?.from) { sql += ' AND originalPaidAt >= ?'; params.push(filters.from) }
-    if (filters?.to) { sql += ' AND originalPaidAt <= ?'; params.push(filters.to) }
-    sql += ' ORDER BY deletedAt DESC'
-    return query(sql, params)
+  list(_shopId: string, _filters?: { from?: string; to?: string }) {
+    return []
   },
-
-  /** Aggregate totals for a shop, optionally filtered by date range. */
-  totals(shopId: string, filters?: { from?: string; to?: string }) {
-    let sql = 'SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total FROM DeletedBill WHERE shopId = ?'
-    const params: any[] = [shopId]
-    if (filters?.from) { sql += ' AND originalPaidAt >= ?'; params.push(filters.from) }
-    if (filters?.to) { sql += ' AND originalPaidAt <= ?'; params.push(filters.to) }
-    const row = queryOne<any>(sql, params)
-    return { count: row?.count || 0, total: row?.total || 0 }
+  totals(_shopId: string, _filters?: { from?: string; to?: string }) {
+    return { count: 0, total: 0 }
   },
 }
 
@@ -563,10 +551,18 @@ export const settings = {
     const sets: string[] = []
     const params: any[] = []
     for (const [key, value] of Object.entries(data)) {
-      if (value != null) {
+      if (value == null) continue
+      // Skip unknown columns — protects against "no such column" errors
+      // if the frontend sends a field the DB doesn't know about yet.
+      if (!(key in row)) continue
+      // Template fields are stored as JSON strings.
+      if ((key === 'billTemplate' || key === 'kotTemplate') && typeof value !== 'string') {
         sets.push(`${key} = ?`)
-        params.push(typeof value === 'boolean' ? (value ? 1 : 0) : value)
+        params.push(JSON.stringify(value))
+        continue
       }
+      sets.push(`${key} = ?`)
+      params.push(typeof value === 'boolean' ? (value ? 1 : 0) : value)
     }
     if (sets.length === 0) return this.get(shopId)
     params.push(shopId)
@@ -636,21 +632,16 @@ export const dashboard = {
     const expensesRow = queryOne<any>('SELECT COALESCE(SUM(amount), 0) as s FROM Expense WHERE shopId = ? AND date >= ?', [shopId, today.toISOString()])
     const purchasesRow = queryOne<any>('SELECT COALESCE(SUM(total), 0) as s FROM Purchase WHERE shopId = ? AND createdAt >= ?', [shopId, today.toISOString()])
     const otherOutRow = queryOne<any>('SELECT COALESCE(SUM(amount), 0) as s FROM MoneyOut WHERE shopId = ? AND date >= ?', [shopId, today.toISOString()])
-    // Deleted bills today (attributed by original paidAt, so a bill paid
-    // yesterday but deleted today still counts against yesterday). This is
-    // exposed as its own metric AND subtracted from net cash flow because
-    // a voided sale is effectively money that left the till.
-    const deletedTodayRow = queryOne<any>(
-      'SELECT COUNT(*) as c, COALESCE(SUM(total), 0) as s FROM DeletedBill WHERE shopId = ? AND originalPaidAt >= ?',
-      [shopId, today.toISOString()]
-    )
+    // Bill deletion has been removed — there is no longer a "deleted bills"
+    // outflow. We keep the field in the response for backward-compat with
+    // the dashboard UI, but it's always zero.
     const salesIn = salesInRow?.s || 0
     const otherIn = otherInRow?.s || 0
     const expenses = expensesRow?.s || 0
     const purchases = purchasesRow?.s || 0
     const otherOut = otherOutRow?.s || 0
-    const deletedBillAmount = deletedTodayRow?.s || 0
-    const deletedBillCount = deletedTodayRow?.c || 0
+    const deletedBillAmount = 0
+    const deletedBillCount = 0
     const chartData: { date: string; revenue: number }[] = []
     for (let i = 6; i >= 0; i--) {
       const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i)
@@ -969,13 +960,11 @@ export const reports = {
 
     const expensesList = query<any>('SELECT * FROM Expense WHERE shopId = ? AND date >= ? AND date <= ?', [shopId, fromIso, toIso])
     const purchasesList = query<any>('SELECT * FROM Purchase WHERE shopId = ? AND createdAt >= ? AND createdAt <= ?', [shopId, fromIso, toIso])
-    // Deleted bills in the same window — attributed by originalPaidAt so
-    // the report for a given day/month correctly shows what was voided
-    // from that period's sales.
-    const deletedBillsList = query<any>(
-      'SELECT * FROM DeletedBill WHERE shopId = ? AND originalPaidAt >= ? AND originalPaidAt <= ? ORDER BY deletedAt DESC',
-      [shopId, fromIso, toIso]
-    )
+    // Bill deletion has been removed — there are no more "deleted bills".
+    // Keep the variable as an empty array so the rest of the report
+    // aggregation (which still references deletedBillsList for compat)
+    // doesn't crash.
+    const deletedBillsList: any[] = []
 
     // ─── Apply advanced filters ──────────────────────────────────────────
     let filteredBills = bills
@@ -1171,9 +1160,28 @@ function convertBill(row: any) {
 }
 function convertSettings(row: any) {
   if (!row) return null
-  const boolKeys = ['billShowLogo','billShowGstin','billShowPhone','billShowAddress','billShowEmail','billShowDateTime','billShowWaiter','billShowCustomer','billShowKotNo','kotShowLogo','kotShowWaiter','kotShowDateTime','kotShowTable','kotShowGuests','zomatoEnabled']
+  const boolKeys = [
+    'billShowLogo','billShowGstin','billShowPhone','billShowAddress','billShowEmail',
+    'billShowDateTime','billShowWaiter','billShowCustomer','billShowKotNo',
+    'billBoldText',
+    'kotShowLogo','kotShowWaiter','kotShowDateTime','kotShowTable','kotShowGuests',
+    'kotBoldText',
+    'zomatoEnabled','autoPrint','silentPrint',
+  ]
   const result = { ...row }
   for (const key of boolKeys) { if (key in result) result[key] = !!result[key] }
+  // Parse template JSON if present (billTemplate / kotTemplate store the
+  // admin-defined field order as a JSON array of field keys).
+  try {
+    if (typeof result.billTemplate === 'string' && result.billTemplate) {
+      result.billTemplate = JSON.parse(result.billTemplate)
+    }
+  } catch { result.billTemplate = null }
+  try {
+    if (typeof result.kotTemplate === 'string' && result.kotTemplate) {
+      result.kotTemplate = JSON.parse(result.kotTemplate)
+    }
+  } catch { result.kotTemplate = null }
   return result
 }
 function convertUser(row: any) {

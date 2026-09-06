@@ -2,11 +2,50 @@
 - Local:         http://localhost:3000
 - Network:       http://172.31.42.67:3000
 - Environments: .env
-✓ Ready in 29.5s
-✓ Running next.config.ts took 4.9s
+✓ Ready in 8.7s
+✓ Running next.config.ts took 33.1s
 
-○ Compiling / ...
- GET / 200 in 19.6s (next.js: 18.7s, application-code: 875ms)
-[browser] Realtime send() is automatically falling back to REST API. This behavior will be deprecated in the future. Please use httpSend() explicitly for REST delivery. (src/hooks/use-restaurant-sync.ts:171:33)
-[browser] Realtime send() is automatically falling back to REST API. This behavior will be deprecated in the future. Please use httpSend() explicitly for REST delivery. (src/hooks/use-restaurant-sync.ts:166:33)
-[browser] Realtime send() is automatically falling back to REST API. This behavior will be deprecated in the future. Please use httpSend() explicitly for REST delivery. (src/hooks/use-restaurant-sync.ts:176:33)
+✓ Finished filesystem cache database compaction in 23.3s
+ GET / 200 in 9.5s (next.js: 3.7s, application-code: 5.8s)
+ GET / 200 in 1931ms (next.js: 588ms, application-code: 1343ms)
+[browser] [client-db] sync save failed: ReferenceError: MAX_BACKUP_SIZE is not defined
+    at persistDBSync (src/lib/client-db.ts:659:24)
+    at Home.useEffect.handleBeforeUnload (src/app/page.tsx:53:22)
+  657 |   try {
+  658 |     const data = db.export()
+> 659 |     if (data.length <= MAX_BACKUP_SIZE) {
+      |                        ^
+  660 |       const b64 = uint8ToBase64(data)
+  661 |       localStorage.setItem(DB_BACKUP_KEY, b64)
+  662 |     } (src/lib/client-db.ts:665:13)
+[browser] [client-db] sync save failed: ReferenceError: MAX_BACKUP_SIZE is not defined
+    at persistDBSync (src/lib/client-db.ts:659:24)
+    at Home.useEffect.handleBeforeUnload (src/app/page.tsx:53:22)
+  657 |   try {
+  658 |     const data = db.export()
+> 659 |     if (data.length <= MAX_BACKUP_SIZE) {
+      |                        ^
+  660 |       const b64 = uint8ToBase64(data)
+  661 |       localStorage.setItem(DB_BACKUP_KEY, b64)
+  662 |     } (src/lib/client-db.ts:665:13)
+ GET / 200 in 610ms (next.js: 201ms, application-code: 409ms)
+[browser] [client-db] sync save failed: ReferenceError: MAX_BACKUP_SIZE is not defined
+    at persistDBSync (src/lib/client-db.ts:659:24)
+    at Home.useEffect.handleBeforeUnload (src/app/page.tsx:53:22)
+  657 |   try {
+  658 |     const data = db.export()
+> 659 |     if (data.length <= MAX_BACKUP_SIZE) {
+      |                        ^
+  660 |       const b64 = uint8ToBase64(data)
+  661 |       localStorage.setItem(DB_BACKUP_KEY, b64)
+  662 |     } (src/lib/client-db.ts:665:13)
+[browser] [client-db] sync save failed: ReferenceError: MAX_BACKUP_SIZE is not defined
+    at persistDBSync (src/lib/client-db.ts:659:24)
+    at Home.useEffect.handleBeforeUnload (src/app/page.tsx:53:22)
+  657 |   try {
+  658 |     const data = db.export()
+> 659 |     if (data.length <= MAX_BACKUP_SIZE) {
+      |                        ^
+  660 |       const b64 = uint8ToBase64(data)
+  661 |       localStorage.setItem(DB_BACKUP_KEY, b64)
+  662 |     } (src/lib/client-db.ts:665:13)

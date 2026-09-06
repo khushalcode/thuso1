@@ -196,7 +196,20 @@ export function useShopFetch() {
     const sendMatch = url.match(/^\/api\/orders\/([^/]+)\/send$/)
     if (sendMatch && method === 'POST') {
       const id = sendMatch[1]
-      return fakeResponse({ order: orders.sendKOT(id) })
+      const updated = orders.sendKOT(id)
+      // ─── Assign daily KOT number (= future bill number) on first send ───
+      // The order keeps the same number for the rest of its lifecycle, so
+      // when it's eventually billed the bill number matches the KOT number
+      // that was printed for the kitchen.
+      try {
+        const order = orders.getById(id)
+        if (order?.shopId) {
+          orders.assignKotNumber(order.shopId, id)
+        }
+      } catch (e) {
+        console.warn('[shopFetch] assignKotNumber failed (non-fatal):', e)
+      }
+      return fakeResponse({ order: orders.getById(id) })
     }
     // /api/orders/[id]/status
     const statusMatch = url.match(/^\/api\/orders\/([^/]+)\/status$/)
@@ -256,18 +269,12 @@ export function useShopFetch() {
     }
     const billMatch = url.match(/^\/api\/bills\/([^/]+)$/)
     if (billMatch && method === 'GET') return fakeResponse({ bill: bills.getById(billMatch[1]) })
-    // DELETE /api/bills/[id] — void a bill. Body: { reason, deletedBy, deletedById }.
-    // The bills.delete() helper captures a snapshot into DeletedBill, reverses
-    // the auto-added MoneyIn, frees the table, writes an audit log entry, and
-    // finally removes the Bill row.
+    // DELETE /api/bills/[id] — REMOVED per user request ("puro bill delete
+    // system hatai d"). Bill deletion is no longer possible from any UI;
+    // this endpoint now returns 405 Method Not Allowed so any stray
+    // request fails loudly instead of silently doing nothing.
     if (billMatch && method === 'DELETE') {
-      const ok = bills.delete(billMatch[1], {
-        reason: body.reason,
-        deletedBy: body.deletedBy,
-        deletedById: body.deletedById,
-      })
-      if (!ok) return fakeResponse({ error: 'Bill not found' }, 404)
-      return fakeResponse({ ok: true })
+      return fakeResponse({ error: 'Bill deletion has been disabled' }, 405)
     }
 
     // ─── SETTINGS ───

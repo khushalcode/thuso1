@@ -5,7 +5,7 @@ import { motion } from 'framer-motion'
 import {
   Store, Receipt, Save, Loader2, RotateCcw, Palette, Type, Eye, EyeOff,
   AlignLeft, AlignCenter, AlignRight, FileText, ChefHat, Bike, Link as LinkIcon,
-  ShieldCheck, AlertCircle, Copy, Printer, Zap, Bold,
+  ShieldCheck, AlertCircle, Copy, Zap, Bold, Ruler, GripVertical,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -21,8 +21,14 @@ import { useShopFetch } from '@/hooks/use-shop-fetch'
 import { useSession } from '@/lib/session'
 import type { ShopSettings } from '@/lib/types'
 import { BillReceiptPreview } from '@/components/shared/StylePreviews'
+import { WysiwygTemplateEditor, BILL_BLOCK_META, KOT_BLOCK_META } from '@/components/shared/WysiwygTemplateEditor'
+import type { TemplateBlock } from '@/components/shared/Receipts'
 
 // ─── Thermal printer presets ───────────────────────────────────────────
+// Kept for reference — these are no longer surfaced as a dedicated
+// "Printer" tab (that tab was removed per user request), but the preset
+// values are still applied when the user picks a paper width on the
+// Bill / KOT tabs.
 interface PrinterPreset {
   id: string
   name: string
@@ -41,19 +47,6 @@ const PRINTER_PRESETS: PrinterPreset[] = [
   {
     id: 'retsol-8tuep',
     name: 'Retsol 8TUEP (80mm USB Thermal)',
-    description: '80mm paper · 11px font · 4mm margin · 1 copy · auto-print on',
-    values: {
-      paperWidth: 80,
-      printFontSize: 11,
-      printMargin: 4,
-      billCopies: 1,
-      autoPrint: true,
-      silentPrint: false,
-    },
-  },
-  {
-    id: 'retsol-rtp-82',
-    name: 'Retsol RTP-82 (80mm Bluetooth Thermal)',
     description: '80mm paper · 11px font · 4mm margin · 1 copy · auto-print on',
     values: {
       paperWidth: 80,
@@ -90,20 +83,45 @@ const PRINTER_PRESETS: PrinterPreset[] = [
       silentPrint: false,
     },
   },
-  {
-    id: 'a4-laser',
-    name: 'A4 Laser / Inkjet Printer',
-    description: '210mm paper · 14px font · 15mm margin · 1 copy · auto-print off',
-    values: {
-      paperWidth: 210,
-      printFontSize: 14,
-      printMargin: 15,
-      billCopies: 1,
-      autoPrint: false,
-      silentPrint: false,
-    },
-  },
 ]
+
+const DEFAULT_BILL_FIELDS = ['header', 'meta', 'items', 'subtotal', 'total', 'extra_note', 'footer']
+const DEFAULT_KOT_FIELDS = ['header', 'meta', 'items', 'notes', 'extra_note', 'footer']
+
+/**
+ * Normalize a template loaded from the DB into TemplateBlock[].
+ *
+ * The DB stores the template as a JSON string. After JSON.parse it can be:
+ *   1. null / empty array → return default blocks
+ *   2. array of strings (old format — just field keys) → convert to blocks
+ *   3. array of TemplateBlock objects (new format) → use as-is
+ *
+ * We also make sure ALL default fields are present so the admin can always
+ * re-add a block they previously deleted.
+ */
+function normalizeLoadedTemplate(tpl: any, defaults: string[]): TemplateBlock[] {
+  if (!tpl || !Array.isArray(tpl) || tpl.length === 0) {
+    return defaults.map((key) => ({ key, enabled: true }))
+  }
+  // Old format: array of strings
+  if (typeof tpl[0] === 'string') {
+    const seen = new Set(tpl as string[])
+    const blocks = (tpl as string[]).map((key) => ({ key, enabled: true }))
+    // Append any missing defaults so the editor shows them in "Add block"
+    for (const key of defaults) {
+      if (!seen.has(key)) blocks.push({ key, enabled: false })
+    }
+    return blocks
+  }
+  // New format: array of objects — make sure all defaults are represented
+  const blocks = tpl as TemplateBlock[]
+  const seen = new Set(blocks.map((b) => b.key))
+  const complete = [...blocks]
+  for (const key of defaults) {
+    if (!seen.has(key)) complete.push({ key, enabled: false })
+  }
+  return complete
+}
 
 export default function SettingsPage() {
   const { currentShop } = useSession()
@@ -124,7 +142,7 @@ export default function SettingsPage() {
     invoicePrefix: 'INV',
     kotPrefix: 'KOT',
     footerNote: 'Thank you for dining with us!',
-    // Bill style
+    // Bill style — 3-color scheme: light blue accent + black bold text
     billShowLogo: true,
     billShowGstin: true,
     billShowPhone: true,
@@ -137,26 +155,35 @@ export default function SettingsPage() {
     billFontSize: 11,
     billHeaderAlign: 'center',
     billExtraNote: '',
-    billAccentColor: '#f97316',
+    billAccentColor: '#0EA5E9',
     billBoldText: true,
-    billTextColor: '#0f172a',
-    // KOT style
+    billTextColor: '#000000',
+    billPaperWidth: 80,
+    billTemplate: DEFAULT_BILL_FIELDS.map((k) => ({ key: k, enabled: true })) as TemplateBlock[],
+    // KOT style — 3-color scheme: light green accent + black bold text
+    // Font size is intentionally LARGER than bill (14 vs 11) for kitchen
+    // readability on thermal paper.
     kotShowLogo: true,
     kotShowWaiter: true,
     kotShowDateTime: true,
     kotShowTable: true,
     kotShowGuests: true,
-    kotFontSize: 12,
+    kotFontSize: 14,
     kotHeaderAlign: 'center',
-    kotAccentColor: '#f97316',
+    kotAccentColor: '#22C55E',
     kotExtraNote: '',
+    kotPaperWidth: 80,
+    kotBoldText: true,
+    kotTextColor: '#000000',
+    kotTemplate: DEFAULT_KOT_FIELDS.map((k) => ({ key: k, enabled: true })) as TemplateBlock[],
     // Zomato API
     zomatoEnabled: false,
     zomatoApiKey: '',
     zomatoRestaurantId: '',
     zomatoApiBaseUrl: 'https://www.zomato.com/partners/v1',
     zomatoWebhookSecret: '',
-    // Printer setup
+    // Printer setup — kept in state (the legacy fields still drive the
+    // PrintPreview width) but no longer surfaced as a dedicated tab.
     paperWidth: 80,
     printFontSize: 11,
     printMargin: 4,
@@ -196,18 +223,24 @@ export default function SettingsPage() {
         billFontSize: data.settings.billFontSize ?? 11,
         billHeaderAlign: data.settings.billHeaderAlign || 'center',
         billExtraNote: data.settings.billExtraNote || '',
-        billAccentColor: data.settings.billAccentColor || '#f97316',
+        billAccentColor: data.settings.billAccentColor || '#0EA5E9',
         billBoldText: data.settings.billBoldText ?? true,
-        billTextColor: data.settings.billTextColor || '#0f172a',
+        billTextColor: data.settings.billTextColor || '#000000',
+        billPaperWidth: data.settings.billPaperWidth ?? 80,
+        billTemplate: normalizeLoadedTemplate(data.settings.billTemplate, DEFAULT_BILL_FIELDS),
         kotShowLogo: data.settings.kotShowLogo ?? true,
         kotShowWaiter: data.settings.kotShowWaiter ?? true,
         kotShowDateTime: data.settings.kotShowDateTime ?? true,
         kotShowTable: data.settings.kotShowTable ?? true,
         kotShowGuests: data.settings.kotShowGuests ?? true,
-        kotFontSize: data.settings.kotFontSize ?? 12,
+        kotFontSize: data.settings.kotFontSize ?? 14,
         kotHeaderAlign: data.settings.kotHeaderAlign || 'center',
-        kotAccentColor: data.settings.kotAccentColor || '#f97316',
+        kotAccentColor: data.settings.kotAccentColor || '#22C55E',
         kotExtraNote: data.settings.kotExtraNote || '',
+        kotPaperWidth: data.settings.kotPaperWidth ?? 80,
+        kotBoldText: data.settings.kotBoldText ?? true,
+        kotTextColor: data.settings.kotTextColor || '#000000',
+        kotTemplate: normalizeLoadedTemplate(data.settings.kotTemplate, DEFAULT_KOT_FIELDS),
         zomatoEnabled: data.settings.zomatoEnabled ?? false,
         zomatoApiKey: data.settings.zomatoApiKey || '',
         zomatoRestaurantId: data.settings.zomatoRestaurantId || '',
@@ -230,16 +263,28 @@ export default function SettingsPage() {
   const save = async () => {
     setSaving(true)
     try {
+      // ─── Defensive: trim any unknown keys from the payload so the
+      // server-side UPDATE never crashes on a column it doesn't know
+      // about. The client-data.ts settings.update() also does this
+      // check, but doing it here too means we get a cleaner error
+      // message in the console if something is misaligned.
+      const payload = { ...f }
       const res = await shopFetch('/api/settings', {
         method: 'PUT',
-        body: JSON.stringify(f),
+        body: JSON.stringify(payload),
       })
-      if (!res.ok) throw new Error()
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        console.error('[SettingsPage] save failed:', err)
+        toast.error(err?.error || 'Failed to save settings — check console for details')
+        return
+      }
       const data = await res.json()
       setSettings(data.settings)
-      toast.success('Settings saved')
-    } catch {
-      toast.error('Failed to save settings')
+      toast.success('Settings saved successfully')
+    } catch (e) {
+      console.error('[SettingsPage] save threw:', e)
+      toast.error('Failed to save settings — check console for details')
     } finally {
       setSaving(false)
     }
@@ -291,9 +336,11 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* Tabs: Shop / Bill Style / KOT Style / Printer / Zomato */}
+      {/* Tabs: Shop / Bill Style / KOT Style / Zomato
+          (Printer tab removed per user request — paper-width + font-size
+          controls are now inline on the Bill / KOT tabs themselves.) */}
       <Tabs defaultValue="shop" className="w-full">
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="shop" className="text-xs sm:text-sm">
             <Store className="w-3.5 h-3.5 mr-1.5" /> Shop
           </TabsTrigger>
@@ -302,9 +349,6 @@ export default function SettingsPage() {
           </TabsTrigger>
           <TabsTrigger value="kot" className="text-xs sm:text-sm">
             <ChefHat className="w-3.5 h-3.5 mr-1.5" /> KOT
-          </TabsTrigger>
-          <TabsTrigger value="printer" className="text-xs sm:text-sm">
-            <Printer className="w-3.5 h-3.5 mr-1.5" /> Printer
           </TabsTrigger>
           <TabsTrigger value="zomato" className="text-xs sm:text-sm">
             <Bike className="w-3.5 h-3.5 mr-1.5" /> Zomato
@@ -384,11 +428,12 @@ export default function SettingsPage() {
         <TabsContent value="bill" className="mt-4">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {/* Bill style controls */}
+            <div className="space-y-4">
             <Card className="border-0 shadow-md rounded-2xl">
               <CardHeader className="pb-3 px-5 pt-5">
                 <div className="flex items-center gap-2">
-                  <div className="p-1.5 rounded-lg bg-emerald-50">
-                    <Receipt className="w-4 h-4 text-emerald-600" />
+                  <div className="p-1.5 rounded-lg bg-sky-50">
+                    <Receipt className="w-4 h-4 text-sky-600" />
                   </div>
                   <CardTitle className="text-sm font-semibold text-slate-900">Bill Style</CardTitle>
                 </div>
@@ -431,7 +476,8 @@ export default function SettingsPage() {
                           />
                           <Input value={f.billTextColor} onChange={(e) => setF({ ...f, billTextColor: e.target.value })} className="flex-1" />
                           <div className="flex gap-1">
-                            {['#0f172a', '#000000', '#1e293b', '#18181b'].map((c) => (
+                            {/* Dark + bold text colors — pure black is the default */}
+                            {['#000000', '#0f172a', '#1e293b', '#18181b'].map((c) => (
                               <button
                                 key={c}
                                 onClick={() => setF({ ...f, billTextColor: c })}
@@ -471,7 +517,7 @@ export default function SettingsPage() {
                         key={a}
                         onClick={() => setF({ ...f, billHeaderAlign: a })}
                         className={`flex items-center justify-center py-2 rounded-lg border-2 text-xs font-medium ${
-                          f.billHeaderAlign === a ? 'border-orange-500 bg-orange-50 text-orange-700' : 'border-slate-200 text-slate-600'
+                          f.billHeaderAlign === a ? 'border-sky-500 bg-sky-50 text-sky-700' : 'border-slate-200 text-slate-600'
                         }`}
                       >
                         {a === 'left' ? <AlignLeft className="w-3.5 h-3.5" /> : a === 'center' ? <AlignCenter className="w-3.5 h-3.5" /> : <AlignRight className="w-3.5 h-3.5" />}
@@ -493,7 +539,8 @@ export default function SettingsPage() {
                     />
                     <Input value={f.billAccentColor} onChange={(e) => setF({ ...f, billAccentColor: e.target.value })} className="flex-1" />
                     <div className="flex gap-1">
-                      {['#f97316', '#10b981', '#8b5cf6', '#ef4444', '#3b82f6', '#0f172a'].map((c) => (
+                      {/* 3-color scheme presets: light blue, light green, black */}
+                      {['#0EA5E9', '#38BDF8', '#22C55E', '#4ADE80', '#000000'].map((c) => (
                         <button
                           key={c}
                           onClick={() => setF({ ...f, billAccentColor: c })}
@@ -515,10 +562,70 @@ export default function SettingsPage() {
                     rows={2}
                   />
                 </div>
+
+                {/* ─── Paper width (thermal printer sizing) ─── */}
+                <div className="space-y-1.5">
+                  <Label className="text-xs flex items-center gap-1"><Ruler className="w-3 h-3" /> Paper Width (thermal printer)</Label>
+                  <div className="grid grid-cols-4 gap-1">
+                    {[58, 72, 80, 210].map((w) => (
+                      <button
+                        key={w}
+                        onClick={() => setF({ ...f, billPaperWidth: w, paperWidth: w })}
+                        className={`py-2 rounded-lg border-2 text-xs font-medium ${
+                          f.billPaperWidth === w ? 'border-sky-500 bg-sky-50 text-sky-700' : 'border-slate-200 text-slate-600'
+                        }`}
+                      >
+                        {w}mm
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-slate-400">
+                    58/72/80mm = thermal roll · 210mm = A4. Bill + KOT can have different widths.
+                  </p>
+                </div>
               </CardContent>
             </Card>
 
-            {/* Bill live preview */}
+            {/* ─── WYSIWYG template editor ───
+                Full mouse + keyboard editor. Click a block to select it,
+                use the toolbar (Bold, Italic, Underline, Font Size, Color,
+                Alignment) to style it, drag blocks to reorder, and type
+                custom text directly into text blocks (header, footer,
+                extra note). */}
+            <Card className="border-0 shadow-md rounded-2xl">
+              <CardHeader className="pb-3 px-5 pt-5">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-lg bg-emerald-50">
+                    <GripVertical className="w-4 h-4 text-emerald-600" />
+                  </div>
+                  <CardTitle className="text-sm font-semibold text-slate-900">
+                    Template Editor
+                    <span className="ml-2 text-[10px] font-normal text-slate-500">click + style + drag</span>
+                  </CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent className="px-5 pb-5 space-y-2">
+                <p className="text-xs text-slate-500 mb-2">
+                  Click any block below to select it, then use the toolbar to change font size, bold, italic,
+                  underline, color, and alignment. For text blocks (header, footer, extra note) you can type
+                  custom text directly. Drag blocks by the grip handle to reorder. Changes apply on Save.
+                </p>
+                <WysiwygTemplateEditor
+                  blocks={f.billTemplate}
+                  blockMeta={BILL_BLOCK_META}
+                  globalFontSize={f.billFontSize}
+                  globalBold={f.billBoldText}
+                  globalColor={f.billTextColor}
+                  globalAlign={f.billHeaderAlign}
+                  onChange={(blocks) => setF({ ...f, billTemplate: blocks })}
+                  onReset={() => setF({ ...f, billTemplate: DEFAULT_BILL_FIELDS.map((k) => ({ key: k, enabled: true })) })}
+                />
+              </CardContent>
+            </Card>
+            </div>
+
+            {/* Bill live preview + ruler */}
+            <div className="space-y-4">
             <Card className="border-0 shadow-md rounded-2xl">
               <CardHeader className="pb-3 px-5 pt-5">
                 <CardTitle className="text-sm font-semibold text-slate-900 flex items-center gap-2">
@@ -526,20 +633,29 @@ export default function SettingsPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="px-5 pb-5">
-                <BillReceiptPreview settings={f} />
+                {/* ─── Ruler ───
+                    A measurement guide showing mm marks so the admin can
+                    see how the receipt will fit on their thermal paper.
+                    Width auto-scales to the selected paper width. */}
+                <PaperRuler mm={f.billPaperWidth} />
+                <div className="mt-2 mx-auto" style={{ width: `${mmToPx(f.billPaperWidth)}px` }}>
+                  <BillReceiptPreview settings={f} />
+                </div>
               </CardContent>
             </Card>
+            </div>
           </div>
         </TabsContent>
 
         {/* KOT style tab */}
         <TabsContent value="kot" className="mt-4">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="space-y-4">
             <Card className="border-0 shadow-md rounded-2xl">
               <CardHeader className="pb-3 px-5 pt-5">
                 <div className="flex items-center gap-2">
-                  <div className="p-1.5 rounded-lg bg-amber-50">
-                    <ChefHat className="w-4 h-4 text-amber-600" />
+                  <div className="p-1.5 rounded-lg bg-emerald-50">
+                    <ChefHat className="w-4 h-4 text-emerald-600" />
                   </div>
                   <CardTitle className="text-sm font-semibold text-slate-900">KOT Style</CardTitle>
                 </div>
@@ -556,16 +672,59 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
+                {/* Text style: bold + dark (mirrors the bill tab's controls) */}
+                <div>
+                  <Label className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 block">Text Style</Label>
+                  <div className="space-y-2">
+                    <ToggleRow
+                      label="Bold & Dark Text (all KOT text)"
+                      checked={f.kotBoldText}
+                      onChange={(v) => setF({ ...f, kotBoldText: v })}
+                    />
+                    {f.kotBoldText && (
+                      <div className="space-y-1.5 pl-1">
+                        <Label className="text-xs">Text Color</Label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={f.kotTextColor}
+                            onChange={(e) => setF({ ...f, kotTextColor: e.target.value })}
+                            className="w-12 h-9 rounded-lg border border-slate-200 cursor-pointer"
+                          />
+                          <Input value={f.kotTextColor} onChange={(e) => setF({ ...f, kotTextColor: e.target.value })} className="flex-1" />
+                          <div className="flex gap-1">
+                            {/* Dark + bold text colors — pure black is the default */}
+                            {['#000000', '#0f172a', '#1e293b', '#18181b'].map((c) => (
+                              <button
+                                key={c}
+                                onClick={() => setF({ ...f, kotTextColor: c })}
+                                className="w-6 h-6 rounded-full border-2 border-white shadow"
+                                style={{ backgroundColor: c }}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-slate-400">
+                          Applies to all KOT text, not just the accent color. Darker = better contrast on thermal prints.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 <div className="space-y-1.5">
                   <Label className="text-xs flex items-center gap-1"><Type className="w-3 h-3" /> Font Size: {f.kotFontSize}px</Label>
                   <input
                     type="range"
                     min={10}
-                    max={16}
+                    max={18}
                     value={f.kotFontSize}
                     onChange={(e) => setF({ ...f, kotFontSize: Number(e.target.value) })}
                     className="w-full"
                   />
+                  <p className="text-[10px] text-slate-400">
+                    KOT font is intentionally larger than the bill for kitchen readability.
+                  </p>
                 </div>
 
                 <div className="space-y-1.5">
@@ -576,7 +735,7 @@ export default function SettingsPage() {
                         key={a}
                         onClick={() => setF({ ...f, kotHeaderAlign: a })}
                         className={`flex items-center justify-center py-2 rounded-lg border-2 text-xs font-medium ${
-                          f.kotHeaderAlign === a ? 'border-orange-500 bg-orange-50 text-orange-700' : 'border-slate-200 text-slate-600'
+                          f.kotHeaderAlign === a ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-600'
                         }`}
                       >
                         {a === 'left' ? <AlignLeft className="w-3.5 h-3.5" /> : a === 'center' ? <AlignCenter className="w-3.5 h-3.5" /> : <AlignRight className="w-3.5 h-3.5" />}
@@ -587,7 +746,7 @@ export default function SettingsPage() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label className="text-xs flex items-center gap-1"><Palette className="w-3 h-3" /> Accent Color</Label>
+                  <Label className="text-xs flex items-center gap-1"><Palette className="w-3 h-3" /> Accent Color (light green default)</Label>
                   <div className="flex items-center gap-2">
                     <input
                       type="color"
@@ -597,7 +756,7 @@ export default function SettingsPage() {
                     />
                     <Input value={f.kotAccentColor} onChange={(e) => setF({ ...f, kotAccentColor: e.target.value })} className="flex-1" />
                     <div className="flex gap-1">
-                      {['#f97316', '#10b981', '#8b5cf6', '#ef4444', '#3b82f6', '#0f172a'].map((c) => (
+                      {['#22C55E', '#4ADE80', '#0EA5E9', '#38BDF8', '#000000'].map((c) => (
                         <button
                           key={c}
                           onClick={() => setF({ ...f, kotAccentColor: c })}
@@ -618,8 +777,61 @@ export default function SettingsPage() {
                     rows={2}
                   />
                 </div>
+
+                {/* ─── Paper width (thermal printer sizing) ─── */}
+                <div className="space-y-1.5">
+                  <Label className="text-xs flex items-center gap-1"><Ruler className="w-3 h-3" /> Paper Width (thermal printer)</Label>
+                  <div className="grid grid-cols-4 gap-1">
+                    {[58, 72, 80, 210].map((w) => (
+                      <button
+                        key={w}
+                        onClick={() => setF({ ...f, kotPaperWidth: w })}
+                        className={`py-2 rounded-lg border-2 text-xs font-medium ${
+                          f.kotPaperWidth === w ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-600'
+                        }`}
+                      >
+                        {w}mm
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-slate-400">
+                    KOT rolls are usually the same width as bill rolls — but you can set a different width here if your kitchen printer is different.
+                  </p>
+                </div>
               </CardContent>
             </Card>
+
+            {/* ─── KOT WYSIWYG template editor ─── */}
+            <Card className="border-0 shadow-md rounded-2xl">
+              <CardHeader className="pb-3 px-5 pt-5">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-lg bg-sky-50">
+                    <GripVertical className="w-4 h-4 text-sky-600" />
+                  </div>
+                  <CardTitle className="text-sm font-semibold text-slate-900">
+                    KOT Template Editor
+                    <span className="ml-2 text-[10px] font-normal text-slate-500">click + style + drag</span>
+                  </CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent className="px-5 pb-5 space-y-2">
+                <p className="text-xs text-slate-500 mb-2">
+                  Click any block to select it, then use the toolbar to style it (bold, italic, underline,
+                  font size, color, alignment). Type custom text directly into text blocks. Drag to reorder.
+                </p>
+                <WysiwygTemplateEditor
+                  blocks={f.kotTemplate}
+                  blockMeta={KOT_BLOCK_META}
+                  globalFontSize={f.kotFontSize}
+                  globalBold={f.kotBoldText}
+                  globalColor={f.kotTextColor}
+                  globalAlign={f.kotHeaderAlign}
+                  onChange={(blocks) => setF({ ...f, kotTemplate: blocks })}
+                  onReset={() => setF({ ...f, kotTemplate: DEFAULT_KOT_FIELDS.map((k) => ({ key: k, enabled: true })) })}
+                />
+              </CardContent>
+            </Card>
+            </div>
 
             <Card className="border-0 shadow-md rounded-2xl">
               <CardHeader className="pb-3 px-5 pt-5">
@@ -628,182 +840,9 @@ export default function SettingsPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="px-5 pb-5">
-                <KotReceiptPreview settings={f} />
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
-
-        {/* Printer setup tab */}
-        <TabsContent value="printer" className="mt-4">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Printer presets */}
-            <Card className="border-0 shadow-md rounded-2xl">
-              <CardHeader className="pb-3 px-5 pt-5">
-                <div className="flex items-center gap-2">
-                  <div className="p-1.5 rounded-lg bg-violet-50">
-                    <Zap className="w-4 h-4 text-violet-600" />
-                  </div>
-                  <CardTitle className="text-sm font-semibold text-slate-900">Printer Presets</CardTitle>
-                </div>
-              </CardHeader>
-              <CardContent className="px-5 pb-5 space-y-2">
-                <p className="text-xs text-slate-500 mb-2">
-                  Pick your thermal printer model. The right paper width, font
-                  size, and margins will be filled in automatically — you can
-                  still tweak them in the panel on the right.
-                </p>
-                {PRINTER_PRESETS.map((p) => {
-                  const isActive =
-                    f.paperWidth === p.values.paperWidth &&
-                    f.printFontSize === p.values.printFontSize &&
-                    f.printMargin === p.values.printMargin &&
-                    f.billCopies === p.values.billCopies &&
-                    f.autoPrint === p.values.autoPrint
-                  return (
-                    <button
-                      key={p.id}
-                      onClick={() => setF({ ...f, ...p.values })}
-                      className={`w-full text-left p-3 rounded-xl border-2 transition-all ${
-                        isActive
-                          ? 'border-violet-500 bg-violet-50'
-                          : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-semibold text-slate-900 truncate">{p.name}</p>
-                          <p className="text-[10px] text-slate-500 mt-0.5">{p.description}</p>
-                        </div>
-                        {isActive && (
-                          <Badge className="text-[9px] bg-violet-500 text-white shrink-0">Active</Badge>
-                        )}
-                      </div>
-                    </button>
-                  )
-                })}
-
-                {/* Quick callout for the Retsol 8TUEP — most common in Indian restaurants */}
-                <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800 space-y-1 mt-3">
-                  <p className="font-bold flex items-center gap-1">
-                    <Printer className="w-3.5 h-3.5" /> Recommended for Retsol 8TUEP
-                  </p>
-                  <p>• Paper width: <strong>80mm</strong> (thermal roll, 80×80 or 80×80×12.7)</p>
-                  <p>• Font size: <strong>11px</strong> (best legibility on 80mm)</p>
-                  <p>• Margin: <strong>4mm</strong> (matches printer's hardware margin)</p>
-                  <p>• Copies: <strong>1</strong> (single copy — Customer Copy)</p>
-                  <p>• Auto-print: <strong>ON</strong> (print dialog opens automatically)</p>
-                  <p>• Install the printer's USB driver on Windows; on Android APK the printer is auto-detected via USB-OTG.</p>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Manual printer controls */}
-            <Card className="border-0 shadow-md rounded-2xl">
-              <CardHeader className="pb-3 px-5 pt-5">
-                <div className="flex items-center gap-2">
-                  <div className="p-1.5 rounded-lg bg-slate-100">
-                    <Printer className="w-4 h-4 text-slate-700" />
-                  </div>
-                  <CardTitle className="text-sm font-semibold text-slate-900">Printer Settings</CardTitle>
-                </div>
-              </CardHeader>
-              <CardContent className="px-5 pb-5 space-y-4">
-                {/* Paper width selector */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Paper Width (mm)</Label>
-                  <div className="grid grid-cols-4 gap-1">
-                    {[58, 72, 80, 210].map((w) => (
-                      <button
-                        key={w}
-                        onClick={() => setF({ ...f, paperWidth: w })}
-                        className={`py-2 rounded-lg border-2 text-xs font-medium ${
-                          f.paperWidth === w ? 'border-violet-500 bg-violet-50 text-violet-700' : 'border-slate-200 text-slate-600'
-                        }`}
-                      >
-                        {w}mm
-                      </button>
-                    ))}
-                  </div>
-                  <p className="text-[10px] text-slate-400">
-                    58mm / 72mm / 80mm = thermal roll; 210mm = A4.
-                  </p>
-                </div>
-
-                {/* Font size slider */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs flex items-center gap-1"><Type className="w-3 h-3" /> Print Font Size: {f.printFontSize}px</Label>
-                  <input
-                    type="range"
-                    min={9}
-                    max={16}
-                    value={f.printFontSize}
-                    onChange={(e) => setF({ ...f, printFontSize: Number(e.target.value) })}
-                    className="w-full"
-                  />
-                </div>
-
-                {/* Margin */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Print Margin (mm): {f.printMargin}</Label>
-                  <input
-                    type="range"
-                    min={0}
-                    max={20}
-                    value={f.printMargin}
-                    onChange={(e) => setF({ ...f, printMargin: Number(e.target.value) })}
-                    className="w-full"
-                  />
-                </div>
-
-                {/* Bill copies */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Number of Copies</Label>
-                  <div className="grid grid-cols-3 gap-1">
-                    {[1, 2, 3].map((c) => (
-                      <button
-                        key={c}
-                        onClick={() => setF({ ...f, billCopies: c })}
-                        className={`py-2 rounded-lg border-2 text-xs font-medium ${
-                          f.billCopies === c ? 'border-violet-500 bg-violet-50 text-violet-700' : 'border-slate-200 text-slate-600'
-                        }`}
-                      >
-                        {c} {c === 1 ? 'copy' : 'copies'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Auto-print + silent print toggles */}
-                <div className="space-y-2">
-                  <ToggleRow
-                    label="Auto-open print dialog"
-                    checked={f.autoPrint}
-                    onChange={(v) => setF({ ...f, autoPrint: v })}
-                  />
-                  <ToggleRow
-                    label="Silent print (skip preview)"
-                    checked={f.silentPrint}
-                    onChange={(v) => setF({ ...f, silentPrint: v })}
-                  />
-                </div>
-
-                {/* Optional header / footer text */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Print Header Text (optional)</Label>
-                  <Input
-                    value={f.printHeaderText}
-                    onChange={(e) => setF({ ...f, printHeaderText: e.target.value })}
-                    placeholder="e.g. Welcome to Spice Garden"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Print Footer Text (optional)</Label>
-                  <Input
-                    value={f.printFooterText}
-                    onChange={(e) => setF({ ...f, printFooterText: e.target.value })}
-                    placeholder="e.g. Visit again soon!"
-                  />
+                <PaperRuler mm={f.kotPaperWidth} />
+                <div className="mt-2 mx-auto" style={{ width: `${mmToPx(f.kotPaperWidth)}px` }}>
+                  <KotReceiptPreview settings={f} />
                 </div>
               </CardContent>
             </Card>
@@ -949,57 +988,117 @@ function ToggleRow({ label, checked, onChange }: { label: string; checked: boole
 
 // KOT preview (inline to avoid circular imports)
 function KotReceiptPreview({ settings }: { settings: any }) {
-  const accent = settings.kotAccentColor || '#f97316'
-  const fontSize = settings.kotFontSize || 12
+  const accent = settings.kotAccentColor || '#22C55E'
+  const fontSize = settings.kotFontSize || 14
   const align = settings.kotHeaderAlign || 'center'
+  const bold = settings.kotBoldText !== false
+  const textColor = settings.kotTextColor || '#000000'
+  const fw = bold ? 700 : 400
+  const labelStyle: React.CSSProperties = { fontWeight: fw, color: textColor, fontSize: `${fontSize}px` }
+  const valueStyle: React.CSSProperties = { fontWeight: fw, color: textColor, fontSize: `${fontSize}px` }
 
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-3 font-mono" style={{ fontSize: `${fontSize}px` }}>
+    <div className="bg-white border border-slate-200 rounded-lg p-3 font-mono" style={{ fontSize: `${fontSize}px`, color: textColor, fontWeight: fw }}>
       {settings.kotShowLogo && (
         <div style={{ textAlign: align as any }} className="mb-1">
-          <div className="font-bold text-sm" style={{ color: accent }}>
-            {settings.shopName || 'Restaurant Name'}
+          <div className="font-bold" style={{ color: accent, fontSize: `${fontSize + 2}px` }}>
+            ** {settings.kotPrefix || 'KOT'} **
           </div>
-          <div className="text-[10px] text-slate-500">Kitchen Order Ticket</div>
+          <div style={{ ...labelStyle, fontSize: `${fontSize + 1}px` }}>{settings.shopName || 'Restaurant Name'}</div>
+          <div style={{ ...valueStyle, fontSize: `${fontSize - 2}px` }}>Kitchen Order Ticket</div>
         </div>
       )}
-      <div className="border-t-2 border-dashed border-slate-300 my-1.5" style={{ borderTopColor: accent }} />
+      <div className="border-t-2 border-dashed my-1.5" style={{ borderTopColor: accent }} />
       <div className="space-y-0.5">
-        <Row label="KOT No:" value="#1" />
-        {settings.kotShowTable && <Row label="Table:" value="Table 5" />}
-        {settings.kotShowGuests && <Row label="Guests:" value="4" />}
-        {settings.kotShowWaiter && <Row label="Waiter:" value="Riya" />}
-        {settings.kotShowDateTime && <Row label="Time:" value="12:30 PM" />}
+        <Row label="KOT No:" value="#1000" labelStyle={labelStyle} valueStyle={valueStyle} />
+        {settings.kotShowTable && <Row label="Table:" value="Table 5" labelStyle={labelStyle} valueStyle={valueStyle} />}
+        {settings.kotShowGuests && <Row label="Guests:" value="4" labelStyle={labelStyle} valueStyle={valueStyle} />}
+        {settings.kotShowWaiter && <Row label="Waiter:" value="Riya" labelStyle={labelStyle} valueStyle={valueStyle} />}
+        {settings.kotShowDateTime && <Row label="Time:" value="12:30 PM" labelStyle={labelStyle} valueStyle={valueStyle} />}
       </div>
       <div className="border-t border-dashed border-slate-300 my-1.5" />
       <table className="w-full">
         <thead>
-          <tr style={{ borderBottom: `1px solid ${accent}` }}>
-            <th className="text-left py-0.5">Item</th>
-            <th className="text-right">Qty</th>
+          <tr style={{ borderBottom: `2px solid ${accent}` }}>
+            <th className="text-left py-0.5" style={labelStyle}>Item</th>
+            <th className="text-right" style={labelStyle}>Qty</th>
           </tr>
         </thead>
         <tbody>
-          <tr><td>Butter Chicken</td><td className="text-right font-bold">1</td></tr>
-          <tr><td>Butter Naan</td><td className="text-right font-bold">3</td></tr>
-          <tr><td>Masala Chai</td><td className="text-right font-bold">2</td></tr>
+          <tr><td style={valueStyle}>Butter Chicken</td><td className="text-right" style={valueStyle}>1</td></tr>
+          <tr><td style={valueStyle}>Butter Naan</td><td className="text-right" style={valueStyle}>3</td></tr>
+          <tr><td style={valueStyle}>Masala Chai</td><td className="text-right" style={valueStyle}>2</td></tr>
         </tbody>
       </table>
       {settings.kotExtraNote && (
         <>
           <div className="border-t border-dashed border-slate-300 my-1.5" />
-          <div className="italic text-[10px]">{settings.kotExtraNote}</div>
+          <div className="italic" style={{ ...valueStyle, color: accent }}>{settings.kotExtraNote}</div>
         </>
       )}
     </div>
   )
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function Row({ label, value, labelStyle, valueStyle }: { label: string; value: string; labelStyle?: React.CSSProperties; valueStyle?: React.CSSProperties }) {
   return (
     <div className="flex justify-between">
-      <span className="text-slate-600">{label}</span>
-      <span className="font-bold">{value}</span>
+      <span style={labelStyle}>{label}</span>
+      <span style={valueStyle}>{value}</span>
+    </div>
+  )
+}
+
+// ─── mm → px conversion for the live preview ruler ───
+// 80mm thermal paper ≈ 302px at 96dpi (the standard CSS pixel density).
+// We use this to size the preview container so the admin sees an
+// approximately-true-to-life rendering of how the receipt will fit on
+// the selected paper width.
+function mmToPx(mm: number): number {
+  // 1mm = 3.7795px at 96dpi. We cap the max so 210mm (A4) doesn't
+  // overflow the sidebar layout — anything wider than 100mm gets
+  // scaled down to fit a 380px column.
+  const raw = Math.round(mm * 3.7795)
+  return Math.min(raw, 380)
+}
+
+/**
+ * PaperRuler — a horizontal measurement guide showing mm marks.
+ *
+ * Rendered above each live preview so the admin can see at a glance
+ * whether their content fits within the thermal paper width. Major
+ * ticks every 10mm, minor ticks every 5mm.
+ */
+function PaperRuler({ mm }: { mm: number }) {
+  const widthPx = mmToPx(mm)
+  // Build tick marks: major every 10mm, minor every 5mm in between.
+  const ticks: { left: number; major: boolean; label?: string }[] = []
+  for (let i = 0; i <= mm; i += 5) {
+    const left = (i / mm) * widthPx
+    const major = i % 10 === 0
+    ticks.push({ left, major, label: major ? String(i) : undefined })
+  }
+  return (
+    <div className="mb-2 mx-auto select-none" style={{ width: `${widthPx}px` }}>
+      <div className="relative h-5 border-b border-slate-300 bg-slate-50 rounded-t">
+        {ticks.map((t, idx) => (
+          <div
+            key={idx}
+            className={`absolute bottom-0 ${t.major ? 'h-3 bg-slate-500' : 'h-2 bg-slate-300'}`}
+            style={{ left: `${t.left}px`, width: '1px' }}
+          >
+            {t.label && (
+              <span className="absolute -top-3.5 left-1 text-[8px] font-mono text-slate-500">
+                {t.label}
+              </span>
+            )}
+          </div>
+        ))}
+        {/* Right-edge label */}
+        <span className="absolute -bottom-4 right-0 text-[9px] font-mono text-slate-500">
+          {mm}mm
+        </span>
+      </div>
     </div>
   )
 }

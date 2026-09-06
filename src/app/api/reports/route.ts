@@ -66,7 +66,10 @@ export async function GET(req: NextRequest) {
   const maxAmount = sp.get('maxAmount') ? Number(sp.get('maxAmount')) : null
 
   // ─── Fetch bills (with order + items) ────────────────────────────────
-  const [allBills, expensesList, purchasesList, moneyInList, moneyOutList, deletedBills] = await Promise.all([
+  // Bill deletion has been removed — no DeletedBill query anymore.
+  // We keep the `deletedBills` variable as an empty array for compat
+  // with downstream code that still references it.
+  const [allBills, expensesList, purchasesList, moneyInList, moneyOutList] = await Promise.all([
     db.bill.findMany({
       where: { shopId, paidAt: { gte: startDate, lte: endDate } },
       include: { order: { include: { items: true } } },
@@ -76,11 +79,8 @@ export async function GET(req: NextRequest) {
     db.purchase.findMany({ where: { shopId, createdAt: { gte: startDate, lte: endDate } } }),
     db.moneyIn.findMany({ where: { shopId, date: { gte: startDate, lte: endDate } } }),
     db.moneyOut.findMany({ where: { shopId, date: { gte: startDate, lte: endDate } } }),
-    db.deletedBill.findMany({
-      where: { shopId, originalPaidAt: { gte: startDate, lte: endDate } },
-      orderBy: { deletedAt: 'desc' },
-    }),
   ])
+  const deletedBills: any[] = []
 
   // ─── Apply filters ───────────────────────────────────────────────────
   let filteredBills = allBills
