@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, Fragment } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   BarChart3, TrendingUp, Receipt, Wallet, Download, Filter, Package,
@@ -163,6 +163,21 @@ export default function ReportsPage() {
   const s = data.summary
   const bills: any[] = data.bills || []
   const itemizedRows: any[] = data.itemizedRows || []
+
+  // PERF FIX: Memoize the four tfoot reduces so they don't re-run
+  // on every state change (expand row, search keystroke, filter
+  // toggle). With 200 bills in the period, the previous code ran
+  // 4 × 200 = 800 reduce iterations per re-render.
+  const billTotals = useMemo(() => {
+    let subtotal = 0, taxAmount = 0, discount = 0, total = 0
+    for (const b of bills) {
+      subtotal += (b.subtotal || 0)
+      taxAmount += (b.taxAmount || 0)
+      discount += (b.discount || 0)
+      total += (b.total || 0)
+    }
+    return { subtotal, taxAmount, discount, total }
+  }, [bills])
 
   // ─── Stat cards ────────────────────────────────────────────────────────
   const stats = [
@@ -781,9 +796,13 @@ export default function ReportsPage() {
                     const isExpanded = expandedBill === b.id
                     const items = (b.order?.items || []).filter((i: any) => i.status !== 'cancelled')
                     return (
-                      <>
+                      // REACT FIX: Use a keyed <Fragment> instead of `<>`.
+                      // Previously the key was on the inner <tr>s, which
+                      // doesn't satisfy React's list-key requirement and
+                      // could cause the expanded items table to render
+                      // under the wrong bill when toggling.
+                      <Fragment key={b.id}>
                         <tr
-                          key={b.id}
                           className="hover:bg-slate-50 cursor-pointer"
                           onClick={() => setExpandedBill(isExpanded ? null : b.id)}
                         >
@@ -802,7 +821,7 @@ export default function ReportsPage() {
                           <td className="px-3 py-2 text-right font-bold text-slate-900">{formatCurrency(b.total)}</td>
                         </tr>
                         {isExpanded && (
-                          <tr key={`${b.id}-items`} className="bg-amber-50/50">
+                          <tr className="bg-amber-50/50">
                             <td colSpan={11} className="px-6 py-3">
                               <div className="rounded-lg bg-white border border-slate-200 overflow-hidden">
                                 <table className="w-full text-xs">
@@ -841,7 +860,7 @@ export default function ReportsPage() {
                             </td>
                           </tr>
                         )}
-                      </>
+                      </Fragment>
                     )
                   })
                 )}
@@ -852,10 +871,10 @@ export default function ReportsPage() {
                     <td colSpan={7} className="px-3 py-3 text-right font-semibold">
                       Total ({bills.length} bills{bills.length > 200 ? ', showing 200' : ''})
                     </td>
-                    <td className="px-3 py-3 text-right font-bold">{formatCurrency(bills.reduce((s, b) => s + (b.subtotal || 0), 0))}</td>
-                    <td className="px-3 py-3 text-right font-bold">{formatCurrency(bills.reduce((s, b) => s + (b.taxAmount || 0), 0))}</td>
-                    <td className="px-3 py-3 text-right font-bold">{formatCurrency(bills.reduce((s, b) => s + (b.discount || 0), 0))}</td>
-                    <td className="px-3 py-3 text-right font-bold text-orange-400">{formatCurrency(bills.reduce((s, b) => s + (b.total || 0), 0))}</td>
+                    <td className="px-3 py-3 text-right font-bold">{formatCurrency(billTotals.subtotal)}</td>
+                    <td className="px-3 py-3 text-right font-bold">{formatCurrency(billTotals.taxAmount)}</td>
+                    <td className="px-3 py-3 text-right font-bold">{formatCurrency(billTotals.discount)}</td>
+                    <td className="px-3 py-3 text-right font-bold text-orange-400">{formatCurrency(billTotals.total)}</td>
                   </tr>
                 </tfoot>
               )}

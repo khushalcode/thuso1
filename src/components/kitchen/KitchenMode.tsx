@@ -155,7 +155,14 @@ export default function KitchenMode({ onExit, currentMode, onNavigate }: Kitchen
 
   // ----- Item status actions -----
   const setItemStatus = async (ticket: KitchenTicket, item: OrderItem, status: 'preparing' | 'ready') => {
-    // Optimistic
+    const previousStatus = item.status
+    // WALLET/SYNC FIX: Optimistic UI MUST roll back if the PATCH
+    // fails — otherwise the kitchen display says "ready" while the
+    // DB still says "pending", and on next page reload the kitchen
+    // reverts to the truth (looking like the chef's click "didn't
+    // save"). The status broadcast to other devices is also gated
+    // behind the success of the PATCH so the counter PC doesn't get
+    // a fake "ready" signal that disagrees with the DB.
     setTickets((cur) =>
       cur.map((t) =>
         t.orderId === ticket.orderId
@@ -163,19 +170,32 @@ export default function KitchenMode({ onExit, currentMode, onNavigate }: Kitchen
           : t
       )
     )
-    await shopFetch(`/api/orders/${ticket.orderId}/items/${item.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
-    })
-    sync.sendItemStatus({
-      orderId: ticket.orderId,
-      itemId: item.id,
-      status,
-      tableNumber: ticket.tableNumber,
-    })
-    if (status === 'ready') {
-      toast.success(`${item.name} ready for Table ${ticket.tableNumber}`)
+    try {
+      const res = await shopFetch(`/api/orders/${ticket.orderId}/items/${item.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      })
+      if (!res.ok) throw new Error(`PATCH failed with status ${res.status}`)
+      sync.sendItemStatus({
+        orderId: ticket.orderId,
+        itemId: item.id,
+        status,
+        tableNumber: ticket.tableNumber,
+      })
+      if (status === 'ready') {
+        toast.success(`${item.name} ready for Table ${ticket.tableNumber}`)
+      }
+    } catch (e) {
+      console.error('[kitchen] setItemStatus failed — reverting optimistic update:', e)
+      setTickets((cur) =>
+        cur.map((t) =>
+          t.orderId === ticket.orderId
+            ? { ...t, items: t.items.map((i) => (i.id === item.id ? { ...i, status: previousStatus } : i)) }
+            : t
+        )
+      )
+      toast.error(`Could not update "${item.name}" — please try again.`)
     }
   }
 

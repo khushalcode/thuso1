@@ -31,10 +31,17 @@ export default function MoneyOutPage() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const res = await shopFetch('/api/moneyout')
-    const data = await res.json()
-    setItems(data.items)
-    setLoading(false)
+    try {
+      const res = await shopFetch('/api/moneyout')
+      const data = await res.json()
+      setItems(data.items || [])
+    } catch (e) {
+      console.error('[MoneyOutPage] load failed:', e)
+      setItems([])
+    } finally {
+      // CRITICAL: Always clear loading even on failure.
+      setLoading(false)
+    }
   }, [])
 
   useEffect(() => {

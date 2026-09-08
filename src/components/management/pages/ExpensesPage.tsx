@@ -29,10 +29,17 @@ export default function ExpensesPage() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const res = await shopFetch('/api/expenses')
-    const data = await res.json()
-    setItems(data.expenses)
-    setLoading(false)
+    try {
+      const res = await shopFetch('/api/expenses')
+      const data = await res.json()
+      setItems(data.expenses || [])
+    } catch (e) {
+      console.error('[ExpensesPage] load failed:', e)
+      setItems([])
+    } finally {
+      // CRITICAL: Always clear loading even on failure.
+      setLoading(false)
+    }
   }, [])
 
   useEffect(() => { load() }, [load])

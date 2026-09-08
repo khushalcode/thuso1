@@ -634,33 +634,52 @@ export function isDbReady(): boolean {
 }
 
 // ─── Save after writes ───
+// PERF FIX: The old 500ms debounce was too aggressive — every keystroke in
+// an input (e.g. waiter name, order notes) was triggering a full
+// `db.export()` (multi-MB synchronous SQLite serialization) plus an
+// `updateExcelBlob()` rebuild that iterated ALL 16 tables and built a
+// multi-MB HTML string. As the database grew (more bills, more orders,
+// more audit logs), each save cycle blocked the main thread for hundreds
+// of milliseconds, producing the "app lags and freezes mid-use" symptom.
+//
+// New strategy:
+//   • Raise the save debounce to 1500ms — coalesces rapid writes into one.
+//   • Drop `updateExcelBlob()` from the save path entirely. The .xls
+//     blob is now only built on-demand when the user clicks Export to
+//     Excel in Management → Backup. This eliminates the biggest
+//     main-thread blocker in the whole app.
 let saveTimer: any = null
 let periodicSaveTimer: any = null
 
 export function persistDB() {
   if (!db) return
   if (saveTimer) clearTimeout(saveTimer)
-  // Debounce writes (500ms) so rapid mutations don't spam IndexedDB.
+  // Debounce writes (1500ms) so rapid mutations (typing in inputs,
+  // clicking +/- on items, adding items to an order) coalesce into
+  // a SINGLE IndexedDB put instead of spamming it.
   saveTimer = setTimeout(async () => {
-    await saveDB(db!)
-    // Update the persistent Excel blob in IndexedDB (NOT a download —
-    // just stores the latest .xls file in IndexedDB so it accumulates
-    // over time. The user can download it anytime via the Export button
-    // in Management → Backup).
-    updateExcelBlob()
-  }, 500)
+    try {
+      await saveDB(db!)
+    } catch (e) {
+      console.warn('[client-db] debounced save failed:', e)
+    }
+  }, 1500)
 }
 
 // ─── Force-save NOW (for tab close / app close) ────────────────────────
+// PERF/CRASH FIX: The previous version referenced three undefined
+// symbols (`DB_BACKUP_KEY`, `MAX_BACKUP_SIZE`, `uint8ToBase64`) that
+// don't exist anywhere in the codebase. This threw a ReferenceError
+// every time `beforeunload` / `pagehide` fired, which meant the
+// final save was silently dropped on tab close / refresh — and any
+// pending writes in the 1500ms debounce window were lost.
+//
+// We now do a clean sync export + IndexedDB put, no localStorage
+// fallback (the localStorage 5MB cap was also a footgun on its own).
 export function persistDBSync() {
   if (!db) return
   try {
-    const data = db.export()
-    if (data.length <= MAX_BACKUP_SIZE) {
-      const b64 = uint8ToBase64(data)
-      localStorage.setItem(DB_BACKUP_KEY, b64)
-    }
-    saveDB(db).catch(() => {})
+    saveDB(db).catch((e) => console.warn('[client-db] sync save failed:', e))
   } catch (e) {
     console.warn('[client-db] sync save failed:', e)
   }

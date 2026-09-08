@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, Fragment } from 'react'
 import { motion } from 'framer-motion'
 import {
   TrendingUp, TrendingDown, Receipt, Users, Truck, UtensilsCrossed,
@@ -62,7 +62,16 @@ export default function DashboardPage({ currentMode, onNavigate }: DashboardPage
       mounted = false
       clearInterval(t)
     }
-  }, [])
+    // WALLET FIX: Previously deps were `[]`, so when the user switched
+    // shops while sitting on the dashboard, the 30s interval kept
+    // calling the OLD shopFetch bound to the OLD shopId. The four
+    // stat cards (Today's Revenue, Monthly, All-Time, Tables) showed
+    // the previous shop's numbers indefinitely, while the Sales
+    // Detail table (which DID include shopFetch in deps) showed the
+    // new shop's data — an inconsistent dashboard.
+    // Including shopFetch (which captures currentShop.id) re-creates
+    // the interval with the correct bound shop on every switch.
+  }, [shopFetch])
 
   // Compute from/to ISO strings for the sales-detail table
   const { fromIso, toIso } = useMemo(() => {
@@ -383,8 +392,17 @@ export default function DashboardPage({ currentMode, onNavigate }: DashboardPage
                     const isExpanded = expandedBill === b.id
                     const items = (b.order?.items || []).filter((i: any) => i.status !== 'cancelled')
                     return (
-                      <>
-                        <tr key={b.id} className="hover:bg-slate-50 cursor-pointer" onClick={() => setExpandedBill(isExpanded ? null : b.id)}>
+                      // REACT FIX: The previous `<>...</>` fragment
+                      // had no `key` prop, so React flooded the console
+                      // with "Each child in a list should have a unique
+                      // key prop" warnings on every render. The keys
+                      // were on the inner <tr>s, which doesn't satisfy
+                      // React's list-key requirement (the key must be
+                      // on the OUTERMOST element returned from `map`).
+                      // This could also cause the expanded items table
+                      // to render under the wrong bill when toggling.
+                      <Fragment key={b.id}>
+                        <tr className="hover:bg-slate-50 cursor-pointer" onClick={() => setExpandedBill(isExpanded ? null : b.id)}>
                           <td className="px-2 py-2 text-slate-400">{isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}</td>
                           <td className="px-2 py-2 font-mono font-semibold text-slate-900">#{b.billNo}</td>
                           <td className="px-2 py-2 text-slate-600">{formatDateTime(b.paidAt)}</td>
@@ -394,7 +412,7 @@ export default function DashboardPage({ currentMode, onNavigate }: DashboardPage
                           <td className="px-2 py-2 text-right font-bold text-slate-900">{formatCurrency(b.total)}</td>
                         </tr>
                         {isExpanded && (
-                          <tr key={`${b.id}-items`} className="bg-amber-50/50">
+                          <tr className="bg-amber-50/50">
                             <td colSpan={7} className="px-4 py-2">
                               <div className="rounded-lg bg-white border border-slate-200 overflow-hidden">
                                 <table className="w-full text-xs">
@@ -421,7 +439,7 @@ export default function DashboardPage({ currentMode, onNavigate }: DashboardPage
                             </td>
                           </tr>
                         )}
-                      </>
+                      </Fragment>
                     )
                   })
                 )}

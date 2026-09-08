@@ -196,66 +196,83 @@ export default function SettingsPage() {
 
   useEffect(() => {
     const load = async () => {
-      const res = await shopFetch('/api/settings')
-      const data = await res.json()
-      setSettings(data.settings)
-      setF({
-        shopName: data.settings.shopName || '',
-        address: data.settings.address || '',
-        phone: data.settings.phone || '',
-        email: data.settings.email || '',
-        gstin: data.settings.gstin || '',
-        taxRate: String(data.settings.taxRate ?? 0),
-        serviceRate: String(data.settings.serviceRate ?? 0),
-        currency: data.settings.currency || 'Rs.',
-        invoicePrefix: data.settings.invoicePrefix || 'INV',
-        kotPrefix: data.settings.kotPrefix || 'KOT',
-        footerNote: data.settings.footerNote || 'Thank you for dining with us!',
-        billShowLogo: data.settings.billShowLogo ?? true,
-        billShowGstin: data.settings.billShowGstin ?? true,
-        billShowPhone: data.settings.billShowPhone ?? true,
-        billShowAddress: data.settings.billShowAddress ?? true,
-        billShowEmail: data.settings.billShowEmail ?? false,
-        billShowDateTime: data.settings.billShowDateTime ?? true,
-        billShowWaiter: data.settings.billShowWaiter ?? true,
-        billShowCustomer: data.settings.billShowCustomer ?? true,
-        billShowKotNo: data.settings.billShowKotNo ?? true,
-        billFontSize: data.settings.billFontSize ?? 11,
-        billHeaderAlign: data.settings.billHeaderAlign || 'center',
-        billExtraNote: data.settings.billExtraNote || '',
-        billAccentColor: data.settings.billAccentColor || '#0EA5E9',
-        billBoldText: data.settings.billBoldText ?? true,
-        billTextColor: data.settings.billTextColor || '#000000',
-        billPaperWidth: data.settings.billPaperWidth ?? 80,
-        billTemplate: normalizeLoadedTemplate(data.settings.billTemplate, DEFAULT_BILL_FIELDS),
-        kotShowLogo: data.settings.kotShowLogo ?? true,
-        kotShowWaiter: data.settings.kotShowWaiter ?? true,
-        kotShowDateTime: data.settings.kotShowDateTime ?? true,
-        kotShowTable: data.settings.kotShowTable ?? true,
-        kotShowGuests: data.settings.kotShowGuests ?? true,
-        kotFontSize: data.settings.kotFontSize ?? 14,
-        kotHeaderAlign: data.settings.kotHeaderAlign || 'center',
-        kotAccentColor: data.settings.kotAccentColor || '#22C55E',
-        kotExtraNote: data.settings.kotExtraNote || '',
-        kotPaperWidth: data.settings.kotPaperWidth ?? 80,
-        kotBoldText: data.settings.kotBoldText ?? true,
-        kotTextColor: data.settings.kotTextColor || '#000000',
-        kotTemplate: normalizeLoadedTemplate(data.settings.kotTemplate, DEFAULT_KOT_FIELDS),
-        zomatoEnabled: data.settings.zomatoEnabled ?? false,
-        zomatoApiKey: data.settings.zomatoApiKey || '',
-        zomatoRestaurantId: data.settings.zomatoRestaurantId || '',
-        zomatoApiBaseUrl: data.settings.zomatoApiBaseUrl || 'https://www.zomato.com/partners/v1',
-        zomatoWebhookSecret: data.settings.zomatoWebhookSecret || '',
-        paperWidth: data.settings.paperWidth ?? 80,
-        printFontSize: data.settings.printFontSize ?? 11,
-        printMargin: data.settings.printMargin ?? 4,
-        autoPrint: data.settings.autoPrint ?? true,
-        billCopies: data.settings.billCopies ?? 1,
-        silentPrint: data.settings.silentPrint ?? false,
-        printHeaderText: data.settings.printHeaderText || '',
-        printFooterText: data.settings.printFooterText || '',
-      })
-      setLoading(false)
+      try {
+        const res = await shopFetch('/api/settings')
+        const data = await res.json()
+        // GUARD: During logout / shop-switch transitions, `shopId`
+        // can be '' which makes settings.get() return an empty
+        // shape (or the shim returns 400). `data.settings` is then
+        // undefined and the next 60 lines (`data.settings.shopName`)
+        // would throw a TypeError, leaving `setLoading(false)`
+        // un-run and the page stuck on the skeleton forever.
+        if (!data?.settings) {
+          console.warn('[SettingsPage] No settings returned; using defaults')
+          setLoading(false)
+          return
+        }
+        setSettings(data.settings)
+        setF({
+          shopName: data.settings.shopName || '',
+          address: data.settings.address || '',
+          phone: data.settings.phone || '',
+          email: data.settings.email || '',
+          gstin: data.settings.gstin || '',
+          taxRate: String(data.settings.taxRate ?? 0),
+          serviceRate: String(data.settings.serviceRate ?? 0),
+          currency: data.settings.currency || 'Rs.',
+          invoicePrefix: data.settings.invoicePrefix || 'INV',
+          kotPrefix: data.settings.kotPrefix || 'KOT',
+          footerNote: data.settings.footerNote || 'Thank you for dining with us!',
+          billShowLogo: data.settings.billShowLogo ?? true,
+          billShowGstin: data.settings.billShowGstin ?? true,
+          billShowPhone: data.settings.billShowPhone ?? true,
+          billShowAddress: data.settings.billShowAddress ?? true,
+          billShowEmail: data.settings.billShowEmail ?? false,
+          billShowDateTime: data.settings.billShowDateTime ?? true,
+          billShowWaiter: data.settings.billShowWaiter ?? true,
+          billShowCustomer: data.settings.billShowCustomer ?? true,
+          billShowKotNo: data.settings.billShowKotNo ?? true,
+          billFontSize: data.settings.billFontSize ?? 11,
+          billHeaderAlign: data.settings.billHeaderAlign || 'center',
+          billExtraNote: data.settings.billExtraNote || '',
+          billAccentColor: data.settings.billAccentColor || '#0EA5E9',
+          billBoldText: data.settings.billBoldText ?? true,
+          billTextColor: data.settings.billTextColor || '#000000',
+          billPaperWidth: data.settings.billPaperWidth ?? 80,
+          billTemplate: normalizeLoadedTemplate(data.settings.billTemplate, DEFAULT_BILL_FIELDS),
+          kotShowLogo: data.settings.kotShowLogo ?? true,
+          kotShowWaiter: data.settings.kotShowWaiter ?? true,
+          kotShowDateTime: data.settings.kotShowDateTime ?? true,
+          kotShowTable: data.settings.kotShowTable ?? true,
+          kotShowGuests: data.settings.kotShowGuests ?? true,
+          kotFontSize: data.settings.kotFontSize ?? 14,
+          kotHeaderAlign: data.settings.kotHeaderAlign || 'center',
+          kotAccentColor: data.settings.kotAccentColor || '#22C55E',
+          kotExtraNote: data.settings.kotExtraNote || '',
+          kotPaperWidth: data.settings.kotPaperWidth ?? 80,
+          kotBoldText: data.settings.kotBoldText ?? true,
+          kotTextColor: data.settings.kotTextColor || '#000000',
+          kotTemplate: normalizeLoadedTemplate(data.settings.kotTemplate, DEFAULT_KOT_FIELDS),
+          zomatoEnabled: data.settings.zomatoEnabled ?? false,
+          zomatoApiKey: data.settings.zomatoApiKey || '',
+          zomatoRestaurantId: data.settings.zomatoRestaurantId || '',
+          zomatoApiBaseUrl: data.settings.zomatoApiBaseUrl || 'https://www.zomato.com/partners/v1',
+          zomatoWebhookSecret: data.settings.zomatoWebhookSecret || '',
+          paperWidth: data.settings.paperWidth ?? 80,
+          printFontSize: data.settings.printFontSize ?? 11,
+          printMargin: data.settings.printMargin ?? 4,
+          autoPrint: data.settings.autoPrint ?? true,
+          billCopies: data.settings.billCopies ?? 1,
+          silentPrint: data.settings.silentPrint ?? false,
+          printHeaderText: data.settings.printHeaderText || '',
+          printFooterText: data.settings.printFooterText || '',
+        })
+      } catch (e) {
+        console.error('[SettingsPage] load failed:', e)
+      } finally {
+        // CRITICAL: Always clear loading even on failure.
+        setLoading(false)
+      }
     }
     load()
   }, [shopFetch, currentShop?.id])

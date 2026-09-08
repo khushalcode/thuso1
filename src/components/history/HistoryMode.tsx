@@ -62,20 +62,36 @@ export default function HistoryMode({ onExit, currentMode, onNavigate }: History
 
   const load = useCallback(async () => {
     setLoading(true)
-    const params = new URLSearchParams()
-    if (fromDate) params.set('from', new Date(fromDate).toISOString())
-    if (toDate) {
-      const t = new Date(toDate)
-      t.setHours(23, 59, 59, 999)
-      params.set('to', t.toISOString())
+    try {
+      const params = new URLSearchParams()
+      if (fromDate) params.set('from', new Date(fromDate).toISOString())
+      if (toDate) {
+        const t = new Date(toDate)
+        t.setHours(23, 59, 59, 999)
+        params.set('to', t.toISOString())
+      }
+      if (tableFilter !== 'all') params.set('table', tableFilter)
+      if (search) params.set('q', search)
+      const res = await shopFetch(`/api/bills?${params.toString()}`)
+      const data = await res.json()
+      // GUARD: If the shopFetch shim returns a 404/error (e.g.
+      // shopId is empty during logout transition), `data.bills` and
+      // `data.summary` would be undefined — and calling setBills/
+      // setSummary with undefined would later crash the table
+      // render. Fall back to safe empty shapes.
+      setBills(data.bills || [])
+      setSummary(data.summary || { totalRevenue: 0, totalBills: 0, byPayment: {} })
+    } catch (e) {
+      console.error('[HistoryMode] load failed:', e)
+      setBills([])
+      setSummary({ totalRevenue: 0, totalBills: 0, byPayment: {} })
+    } finally {
+      // CRITICAL: Always clear loading, even on failure. The previous
+      // code only called `setLoading(false)` on the happy path — a
+      // thrown shopFetch or JSON parse error left the page stuck on
+      // the spinner forever.
+      setLoading(false)
     }
-    if (tableFilter !== 'all') params.set('table', tableFilter)
-    if (search) params.set('q', search)
-    const res = await shopFetch(`/api/bills?${params.toString()}`)
-    const data = await res.json()
-    setBills(data.bills)
-    setSummary(data.summary)
-    setLoading(false)
   }, [fromDate, toDate, tableFilter, search, shopFetch])
 
   useEffect(() => {

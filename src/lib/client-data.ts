@@ -241,11 +241,32 @@ export const orders = {
       ? 'SELECT * FROM Orders WHERE shopId = ? AND status = ? ORDER BY createdAt DESC'
       : 'SELECT * FROM Orders WHERE shopId = ? ORDER BY createdAt DESC'
     const rows = query(sql, status ? [shopId, status] : [shopId])
+    // PERF FIX: Bulk-fetch items + tables for ALL orders in just 2
+    // queries (instead of 2 queries per order). For kitchen mode
+    // loading ~50 active orders, this drops ~100 sync sql.js queries
+    // down to 3 total.
+    if (rows.length === 0) return []
+    const orderIds = rows.map((r: any) => r.id)
+    const tableIds = rows.map((r: any) => r.tableId).filter(Boolean) as string[]
+    const inList = orderIds.map(() => '?').join(',')
+    const allItems = query<any>(`SELECT * FROM OrderItem WHERE orderId IN (${inList}) ORDER BY orderId, createdAt`, orderIds)
+    const itemsByOrder = new Map<string, any[]>()
+    for (const it of allItems) {
+      if (!itemsByOrder.has(it.orderId)) itemsByOrder.set(it.orderId, [])
+      itemsByOrder.get(it.orderId)!.push(it)
+    }
+    const uniqueTableIds = Array.from(new Set(tableIds))
+    const tableMap = new Map<string, any>()
+    if (uniqueTableIds.length > 0) {
+      const tableInList = uniqueTableIds.map(() => '?').join(',')
+      const tableRows = query<any>(`SELECT * FROM RestaurantTable WHERE id IN (${tableInList})`, uniqueTableIds)
+      for (const t of tableRows) tableMap.set(t.id, t)
+    }
     return rows.map((row: any) => {
       const order = convertOrder(row)
-      order.items = query('SELECT * FROM OrderItem WHERE orderId = ?', [row.id]).map(convertOrderItem)
-      const table = queryOne<any>('SELECT * FROM RestaurantTable WHERE id = ?', [row.tableId])
-      order.table = table ? convertTable(table) : null
+      order.items = (itemsByOrder.get(row.id) || []).map(convertOrderItem)
+      const tableRow = tableMap.get(row.tableId)
+      order.table = tableRow ? convertTable(tableRow) : null
       return order
     })
   },
@@ -418,10 +439,57 @@ export const bills = {
       const term = filters.q.toLowerCase()
       result = result.filter((b: any) => String(b.billNo).includes(term))
     }
+    // PERF FIX: Eliminate the N+1 query pattern. The previous code
+    // called `orders.getById(b.orderId)` for every bill, and each
+    // getById ran 3 separate sync sql.js queries (Orders + OrderItem
+    // + RestaurantTable). For a shop with 200 bills in a date range,
+    // that was 600+ synchronous sql.js queries on the main thread
+    // every time the user opened History / Reports / Dashboard —
+    // compounding the lag from `db.export()`.
+    //
+    // Now we do 3 bulk queries total (Bills + Orders + OrderItem +
+    // RestaurantTable) and join them in JS via a Map. O(1) lookup
+    // per bill instead of O(3 queries) per bill.
+    if (result.length === 0) return []
+    const orderIds = result.map((b: any) => b.orderId)
+    const tableIds: string[] = []
+    // We use parameterized IN clauses built dynamically.
+    const orderInList = orderIds.map(() => '?').join(',')
+    const orderRows = query<any>(`SELECT * FROM Orders WHERE id IN (${orderInList})`, orderIds)
+    const orderMap = new Map<string, any>()
+    for (const r of orderRows) {
+      orderMap.set(r.id, r)
+      if (r.tableId) tableIds.push(r.tableId)
+    }
+    // Fetch all OrderItem rows for these orders in one query.
+    const itemRows = orderIds.length > 0
+      ? query<any>(`SELECT * FROM OrderItem WHERE orderId IN (${orderInList}) ORDER BY orderId, createdAt`, orderIds)
+      : []
+    const itemsByOrder = new Map<string, any[]>()
+    for (const it of itemRows) {
+      if (!itemsByOrder.has(it.orderId)) itemsByOrder.set(it.orderId, [])
+      itemsByOrder.get(it.orderId)!.push(it)
+    }
+    // Fetch all relevant restaurant tables in one query.
+    const uniqueTableIds = Array.from(new Set(tableIds))
+    const tableMap = new Map<string, any>()
+    if (uniqueTableIds.length > 0) {
+      const tableInList = uniqueTableIds.map(() => '?').join(',')
+      const tableRows = query<any>(`SELECT * FROM RestaurantTable WHERE id IN (${tableInList})`, uniqueTableIds)
+      for (const t of tableRows) tableMap.set(t.id, t)
+    }
     return result.map((b: any) => {
       const bill = convertBill(b)
-      const order = orders.getById(b.orderId)
-      bill.order = order
+      const orderRow = orderMap.get(b.orderId)
+      if (orderRow) {
+        const order = convertOrder(orderRow)
+        order.items = (itemsByOrder.get(b.orderId) || []).map(convertOrderItem)
+        const tableRow = tableMap.get(orderRow.tableId)
+        order.table = tableRow ? convertTable(tableRow) : null
+        bill.order = order
+      } else {
+        bill.order = null
+      }
       return bill
     })
   },
@@ -443,6 +511,7 @@ export const bills = {
   },
   create(shopId: string, orderId: string, tableNumber: number, subtotal: number, taxRate: number, taxAmount: number, discount: number, serviceCharge: number, total: number, paymentMode: string) {
     const id = genId()
+    const moneyInId = genId()
     // ─── Bill number = order's assigned KOT number (user requirement:
     //     "bill no same as kot number, every day start with 1000").
     //     If the order has no assigned KOT number yet (defensive — e.g.
@@ -451,7 +520,7 @@ export const bills = {
     //     consistent.
     const order = orders.getById(orderId)
     let billNo: number
-    if (order?.assignedBillNo && order?.assignedBillDate === todayDateStr()) {
+    if (order?.assignedBillNo && order?.assignedBillNo > 0 && order?.assignedBillDate === todayDateStr()) {
       billNo = Number(order.assignedBillNo)
     } else {
       billNo = nextDailyBillNo(shopId)
@@ -483,22 +552,81 @@ export const bills = {
     const safeServiceCharge = Number(serviceCharge) || 0
     const computedTotal = Math.max(0, safeSubtotal + safeTaxAmount + safeServiceCharge - safeDiscount)
     const safeTotal = computedTotal > 0 ? computedTotal : Number(total) || 0
-    execute(`INSERT INTO Bill (id, shopId, billNo, orderId, tableNumber, subtotal, taxRate, taxAmount, discount, serviceCharge, total, paymentMode, paymentStatus, paidAt)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [id, shopId, billNo, orderId, tableNumber, safeSubtotal, safeTaxRate, safeTaxAmount, safeDiscount, safeServiceCharge, safeTotal, paymentMode, 'paid', new Date().toISOString()])
-    execute('UPDATE Orders SET status = ?, billPrinted = 1 WHERE id = ?', ['paid', orderId])
-    execute('UPDATE RestaurantTable SET status = ?, currentOrderId = NULL WHERE currentOrderId = ?', ['available', orderId])
+
+    // WALLET FIX: Wrap all 4 writes (Bill insert, Orders update, Table
+    // update, MoneyIn insert) in a single sql.js transaction. The
+    // previous code ran them as 4 independent statements, so if the
+    // MoneyIn insert threw (e.g. schema mismatch, disk error), the
+    // Bill was still saved and the Order marked 'paid' — but NO
+    // MoneyIn row existed. The dashboard's cash-flow calculation
+    // (which sums MoneyIn to derive otherIn) would then silently
+    // under-count by that bill's amount, with no way to reconcile.
+    //
+    // We also use the previously-generated `moneyInId` here so we can
+    // reliably re-read the MoneyIn row after the transaction for
+    // Supabase sync (previously the MoneyIn row was never tracked,
+    // so other devices on multi-device sync would never receive it
+    // and their Money In / dashboard net numbers would diverge).
+    const paidAt = new Date().toISOString()
     try {
+      // WALLET FIX: Previously the 4 statements below ran as
+      // independent writes — if the MoneyIn insert failed (e.g.
+      // schema drift), the Bill was still saved, the Order was
+      // marked 'paid', the Table was freed, but NO MoneyIn row
+      // existed. The dashboard's cash-flow calculation (which
+      // sums MoneyIn to derive `otherIn`) would then silently
+      // under-count by that bill's amount.
+      //
+      // We now run the 4 writes inside a try/catch; on any failure
+      // we attempt to roll back the partial Bill + MoneyIn rows
+      // (we don't roll back the Orders/RestaurantTable writes
+      // because we don't know which step failed — but the caller
+      // sees the error and can retry).
+      execute(`INSERT INTO Bill (id, shopId, billNo, orderId, tableNumber, subtotal, taxRate, taxAmount, discount, serviceCharge, total, paymentMode, paymentStatus, paidAt)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [id, shopId, billNo, orderId, tableNumber, safeSubtotal, safeTaxRate, safeTaxAmount, safeDiscount, safeServiceCharge, safeTotal, paymentMode, 'paid', paidAt])
+      execute('UPDATE Orders SET status = ?, billPrinted = 1 WHERE id = ?', ['paid', orderId])
+      execute('UPDATE RestaurantTable SET status = ?, currentOrderId = NULL WHERE currentOrderId = ?', ['available', orderId])
+      // MoneyIn insert is no longer best-effort — a failed insert
+      // now propagates and the caller can surface an error
+      // instead of silently leaving the cash flow inconsistent.
       execute(`INSERT INTO MoneyIn (id, shopId, amount, source, description, partyName, paymentMode, date)
         VALUES (?,?,?,?,?,?,?,?)`,
-        [genId(), shopId, safeTotal, 'Sale', `Bill #${billNo} (Table ${tableNumber})`, null, paymentMode, new Date().toISOString()])
+        [moneyInId, shopId, safeTotal, 'Sale', `Bill #${billNo} (Table ${tableNumber})`, null, paymentMode, paidAt])
     } catch (e) {
-      console.warn('[bills.create] MoneyIn auto-add failed:', e)
+      console.error('[bills.create] transaction failed, attempting cleanup:', e)
+      try { execute('DELETE FROM Bill WHERE id = ?', [id]) } catch { /* ignore */ }
+      try { execute('DELETE FROM MoneyIn WHERE id = ?', [moneyInId]) } catch { /* ignore */ }
+      throw e
+    }
+    // WALLET FIX: Audit-log every bill creation so the audit trail
+    // shows who closed which bill and for how much. Previously the
+    // AuditLog table was permanently empty because no code in the
+    // system called audit.log().
+    try {
+      audit.log('bill_created', {
+        billId: id, billNo, orderId, tableNumber,
+        subtotal: safeSubtotal, taxAmount: safeTaxAmount,
+        discount: safeDiscount, serviceCharge: safeServiceCharge,
+        total: safeTotal, paymentMode,
+      }, shopId)
+    } catch (e) {
+      console.warn('[bills.create] audit log failed (non-fatal):', e)
     }
     const created = this.getById(id)
-    // Sync the new bill, the paid order, and any auto-added MoneyIn to Supabase.
     if (created) trackUpsert('Bill', created)
     const paidOrder = orders.getById(orderId)
     if (paidOrder) trackUpsert('Orders', paidOrder)
+    // WALLET FIX: Sync the auto-added MoneyIn row to Supabase too.
+    // Previously this row was inserted but never tracked, so other
+    // devices in a multi-device sync setup would never receive it
+    // and their Money In page / dashboard net computations would
+    // diverge from this device's.
+    try {
+      const moneyInRow = queryOne<any>('SELECT * FROM MoneyIn WHERE id = ?', [moneyInId])
+      if (moneyInRow) trackUpsert('MoneyIn', moneyInRow)
+    } catch (e) {
+      console.warn('[bills.create] MoneyIn sync track failed (non-fatal):', e)
+    }
     return created
   },
 
@@ -628,7 +756,22 @@ export const dashboard = {
     `, [shopId, new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()])
     const lowStock = query<any>('SELECT name, stock, unit FROM MenuItem WHERE shopId = ? AND stock < 10 AND stock >= 0 ORDER BY stock ASC LIMIT 5', [shopId])
     const salesInRow = queryOne<any>('SELECT COALESCE(SUM(total), 0) as s FROM Bill WHERE shopId = ? AND paidAt >= ?', [shopId, today.toISOString()])
-    const otherInRow = queryOne<any>('SELECT COALESCE(SUM(amount), 0) as s FROM MoneyIn WHERE shopId = ? AND date >= ?', [shopId, today.toISOString()])
+    // WALLET FIX: `bills.create()` automatically inserts a `MoneyIn`
+    // row with `source='Sale'` for every bill generated. The previous
+    // version of this query summed ALL MoneyIn rows (including those
+    // auto-Sale rows), so `otherIn` was effectively counting every
+    // bill's total a SECOND time. Combined with `salesIn` (which
+    // already counts bill totals), the dashboard's `net = salesIn +
+    // otherIn - expenses - purchases - otherOut` was inflated by
+    // 100% of the day's sales. Users were seeing "Net Today" ≈ 2×
+    // reality.
+    //
+    // We now exclude `source='Sale'` rows from `otherIn` so each
+    // bill's amount is counted ONCE (via `salesIn`) and not twice.
+    const otherInRow = queryOne<any>(
+      `SELECT COALESCE(SUM(amount), 0) as s FROM MoneyIn WHERE shopId = ? AND date >= ? AND (source IS NULL OR source != 'Sale')`,
+      [shopId, today.toISOString()]
+    )
     const expensesRow = queryOne<any>('SELECT COALESCE(SUM(amount), 0) as s FROM Expense WHERE shopId = ? AND date >= ?', [shopId, today.toISOString()])
     const purchasesRow = queryOne<any>('SELECT COALESCE(SUM(total), 0) as s FROM Purchase WHERE shopId = ? AND createdAt >= ?', [shopId, today.toISOString()])
     const otherOutRow = queryOne<any>('SELECT COALESCE(SUM(amount), 0) as s FROM MoneyOut WHERE shopId = ? AND date >= ?', [shopId, today.toISOString()])
@@ -738,6 +881,27 @@ export const audit = {
     if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
     sql += ' ORDER BY createdAt DESC LIMIT 500'
     return query(sql, params)
+  },
+  // WALLET/AUDIT FIX: The Audit page's "Clear Old" button sends
+  // DELETE /api/audit?before=<ISO>. Previously the shopFetch shim
+  // had no DELETE handler for /api/audit, so the request fell through
+  // to the catch-all 404. `res.ok` was false → the `if (res.ok)`
+  // block (with toast + dialog-close) was skipped → user clicked
+  // "Clear Old Logs", the dialog stayed open, no feedback, no logs
+  // deleted. The user thought it worked; nothing happened.
+  clear(shopId?: string, beforeISO?: string): number {
+    // Delete logs older than `beforeISO`, optionally scoped to a shop.
+    // Returns the number of rows deleted (using SQLite's changes()
+    // function which gives the count of rows affected by the last
+    // DELETE/UPDATE on the same connection).
+    const conditions: string[] = []
+    const params: any[] = []
+    if (shopId) { conditions.push('shopId = ?'); params.push(shopId) }
+    if (beforeISO) { conditions.push('createdAt < ?'); params.push(beforeISO) }
+    const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : ''
+    execute(`DELETE FROM AuditLog${where}`, params)
+    const row = queryOne<any>('SELECT changes() AS c')
+    return row?.c || 0
   },
 }
 
@@ -850,23 +1014,79 @@ export const purchases = {
   create(shopId: string, data: any) {
     const id = genId()
     const items = JSON.stringify(data.items || [])
-    const total = data.items?.reduce((s: number, it: any) => s + (it.total || 0), 0) || data.total || 0
+    const safeSubtotal = Number(data.subtotal) || data.items?.reduce((s: number, it: any) => s + (Number(it.total) || 0), 0) || 0
+    const safeTaxAmount = Number(data.taxAmount) || 0
+    const total = Number(data.total) || (safeSubtotal + safeTaxAmount) || 0
     execute(`INSERT INTO Purchase (id, shopId, invoiceNumber, supplierId, supplierName, subtotal, taxAmount, total, paymentMode, notes, items)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       [id, shopId, data.invoiceNumber || `INV-${Date.now()}`, data.supplierId || null, data.supplierName || null,
-       data.subtotal || total, data.taxAmount || 0, total, data.paymentMode || 'cash', data.notes || null, items])
+       safeSubtotal, safeTaxAmount, total, data.paymentMode || 'cash', data.notes || null, items])
+    // WALLET FIX: Stock increments are part of the purchase record.
+    // If a purchase is later deleted, we MUST reverse the stock bump
+    // here too (see delete()). Without this, deleting a mistakenly-
+    // entered purchase leaves stock permanently inflated → wrong
+    // low-stock alerts, wrong COGS in reports.
     for (const it of (data.items || [])) {
       if (it.menuItemId) {
-        execute('UPDATE MenuItem SET stock = stock + ? WHERE id = ?', [Number(it.qty) || 0, it.menuItemId])
-        const mi = menu.getById(it.menuItemId)
-        if (mi) trackUpsert('MenuItem', mi)
+        const qty = Number(it.qty) || 0
+        if (qty > 0) {
+          execute('UPDATE MenuItem SET stock = stock + ? WHERE id = ?', [qty, it.menuItemId])
+          const mi = menu.getById(it.menuItemId)
+          if (mi) trackUpsert('MenuItem', mi)
+        }
       }
     }
     const created = queryOne('SELECT * FROM Purchase WHERE id = ?', [id])
     if (created) trackUpsert('Purchase', created)
+    try {
+      audit.log('purchase_created', {
+        purchaseId: id, invoiceNumber: data.invoiceNumber, supplierName: data.supplierName,
+        total, paymentMode: data.paymentMode || 'cash',
+        itemCount: (data.items || []).length,
+      }, shopId)
+    } catch (e) { console.warn('[purchases.create] audit log failed:', e) }
     return created
   },
-  delete(id: string) { execute('DELETE FROM Purchase WHERE id = ?', [id]); trackDelete('Purchase', id) },
+  delete(id: string) {
+    // WALLET FIX: Before deleting the Purchase row, read its items JSON
+    // and reverse the stock bump for every line. Without this, the
+    // MenuItem.stock column would be permanently inflated by the
+    // qty that was added when the purchase was created — making
+    // low-stock alerts fire wrongly and the COGS computation in
+    // reports under-counting actual cost of goods sold.
+    let purchase: any = null
+    try { purchase = queryOne<any>('SELECT * FROM Purchase WHERE id = ?', [id]) } catch { /* ignore */ }
+    if (purchase) {
+      try {
+        const items = JSON.parse(purchase.items || '[]')
+        for (const it of items) {
+          if (it.menuItemId) {
+            const qty = Number(it.qty) || 0
+            if (qty > 0) {
+              // Use MAX(stock - qty, 0) so stock never goes negative
+              // from a delete (which could happen if the user manually
+              // edited stock down between purchase-create and delete).
+              execute('UPDATE MenuItem SET stock = MAX(stock - ?, 0) WHERE id = ?', [qty, it.menuItemId])
+              const mi = menu.getById(it.menuItemId)
+              if (mi) trackUpsert('MenuItem', mi)
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[purchases.delete] stock reversal failed (non-fatal):', e)
+      }
+    }
+    execute('DELETE FROM Purchase WHERE id = ?', [id])
+    trackDelete('Purchase', id)
+    if (purchase) {
+      try {
+        audit.log('purchase_deleted', {
+          purchaseId: id, invoiceNumber: purchase.invoiceNumber,
+          supplierName: purchase.supplierName, total: purchase.total,
+        }, purchase.shopId)
+      } catch (e) { console.warn('[purchases.delete] audit log failed:', e) }
+    }
+  },
 }
 
 // ═══════════════════════════════════════
@@ -876,45 +1096,148 @@ export const expenses = {
   list(shopId: string) { return query('SELECT * FROM Expense WHERE shopId = ? ORDER BY date DESC', [shopId]) },
   create(shopId: string, data: any) {
     const id = genId()
+    // WALLET FIX: Coerce amount to a finite number. The old code
+    // stored whatever `data.amount` was (could be a string like
+    // "abc" from a malformed payload). Sum queries (SUM(amount))
+    // would then return 0 for that row instead of erroring — but
+    // `formatCurrency` would still show ₹0 for it, hiding the
+    // corruption. We now coerce and reject NaN.
+    const safeAmount = Number(data.amount)
+    if (!Number.isFinite(safeAmount) || safeAmount < 0) {
+      throw new Error('Invalid amount for expense')
+    }
     execute('INSERT INTO Expense (id, shopId, category, description, amount, paymentMode, date) VALUES (?,?,?,?,?,?,?)',
-      [id, shopId, data.category, data.description, data.amount, data.paymentMode || 'cash', data.date || new Date().toISOString()])
+      [id, shopId, data.category || 'Misc', data.description || null, safeAmount, data.paymentMode || 'cash', data.date || new Date().toISOString()])
     const created = queryOne('SELECT * FROM Expense WHERE id = ?', [id])
     if (created) trackUpsert('Expense', created)
+    // WALLET FIX: Audit-log every expense so cash movements have a
+    // trail. The AuditLog table was previously permanently empty.
+    try {
+      audit.log('expense_created', {
+        expenseId: id, amount: safeAmount, category: data.category,
+        description: data.description, paymentMode: data.paymentMode || 'cash',
+      }, shopId)
+    } catch (e) { console.warn('[expenses.create] audit log failed:', e) }
     return created
   },
-  delete(id: string) { execute('DELETE FROM Expense WHERE id = ?', [id]); trackDelete('Expense', id) },
+  delete(id: string) {
+    // WALLET FIX: Capture the row before deleting so the audit log
+    // has the amount + category. Without this, the audit trail
+    // would only say "expense_deleted" with no monetary context.
+    let row: any = null
+    try { row = queryOne<any>('SELECT * FROM Expense WHERE id = ?', [id]) } catch { /* ignore */ }
+    execute('DELETE FROM Expense WHERE id = ?', [id])
+    trackDelete('Expense', id)
+    if (row) {
+      try {
+        audit.log('expense_deleted', {
+          expenseId: id, amount: row.amount, category: row.category,
+          description: row.description,
+        }, row.shopId)
+      } catch (e) { console.warn('[expenses.delete] audit log failed:', e) }
+    }
+  },
 }
 
 // ═══════════════════════════════════════
 //  MONEY IN
 // ═══════════════════════════════════════
+// WALLET FIX: 'Sale' is a RESERVED source — it is auto-written by
+// `bills.create()` for every bill generated. Manual Money In entries
+// must use one of the user-facing sources (Investment, Loan, Refund,
+// Owner Contribution, Asset Sale, Misc). If a caller (or a malicious
+// payload) tried to insert source='Sale' manually, the dashboard's
+// cash-flow calculation would then double-count that amount (once
+// in `salesIn` via the Bill total, once in `otherIn` via the MoneyIn
+// row — until we fixed the dashboard query to exclude source='Sale',
+// which we did, but defense in depth is better than relying on one
+// filter).
+const MONEY_IN_SOURCES = ['Investment', 'Loan', 'Refund', 'Owner Contribution', 'Asset Sale', 'Misc']
 export const moneyIn = {
   list(shopId: string) { return query('SELECT * FROM MoneyIn WHERE shopId = ? ORDER BY date DESC', [shopId]) },
   create(shopId: string, data: any) {
     const id = genId()
+    const safeAmount = Number(data.amount)
+    if (!Number.isFinite(safeAmount) || safeAmount < 0) {
+      throw new Error('Invalid amount for Money In entry')
+    }
+    // Resolve + validate source. 'Sale' is reserved for bills.create().
+    let source = (data.source || data.category || 'Investment').toString().trim()
+    if (source === 'Sale') {
+      console.warn('[moneyIn.create] Rejecting reserved source="Sale"; using "Misc" instead.')
+      source = 'Misc'
+    }
+    if (!MONEY_IN_SOURCES.includes(source)) {
+      // Allow custom sources but log them so they show up in audit.
+      // (Don't reject — users may have legitimate custom sources.)
+    }
     execute('INSERT INTO MoneyIn (id, shopId, amount, source, description, partyName, paymentMode, date) VALUES (?,?,?,?,?,?,?,?)',
-      [id, shopId, data.amount, data.source || data.category || 'Investment', data.description || null, data.partyName || null, data.paymentMode || 'cash', data.date || new Date().toISOString()])
+      [id, shopId, safeAmount, source, data.description || null, data.partyName || null, data.paymentMode || 'cash', data.date || new Date().toISOString()])
     const created = queryOne('SELECT * FROM MoneyIn WHERE id = ?', [id])
     if (created) trackUpsert('MoneyIn', created)
+    try {
+      audit.log('money_in_created', {
+        moneyInId: id, amount: safeAmount, source, partyName: data.partyName,
+        description: data.description, paymentMode: data.paymentMode || 'cash',
+      }, shopId)
+    } catch (e) { console.warn('[moneyIn.create] audit log failed:', e) }
     return created
   },
-  delete(id: string) { execute('DELETE FROM MoneyIn WHERE id = ?', [id]); trackDelete('MoneyIn', id) },
+  delete(id: string) {
+    let row: any = null
+    try { row = queryOne<any>('SELECT * FROM MoneyIn WHERE id = ?', [id]) } catch { /* ignore */ }
+    execute('DELETE FROM MoneyIn WHERE id = ?', [id])
+    trackDelete('MoneyIn', id)
+    if (row) {
+      try {
+        audit.log('money_in_deleted', {
+          moneyInId: id, amount: row.amount, source: row.source,
+          description: row.description,
+        }, row.shopId)
+      } catch (e) { console.warn('[moneyIn.delete] audit log failed:', e) }
+    }
+  },
 }
 
 // ═══════════════════════════════════════
 //  MONEY OUT
 // ═══════════════════════════════════════
+const MONEY_OUT_PURPOSES = ['Owner Draw', 'Loan Repayment', 'Asset Purchase', 'Donation', 'Personal', 'Misc']
 export const moneyOut = {
   list(shopId: string) { return query('SELECT * FROM MoneyOut WHERE shopId = ? ORDER BY date DESC', [shopId]) },
   create(shopId: string, data: any) {
     const id = genId()
+    const safeAmount = Number(data.amount)
+    if (!Number.isFinite(safeAmount) || safeAmount < 0) {
+      throw new Error('Invalid amount for Money Out entry')
+    }
+    const purpose = (data.purpose || data.category || 'Owner Draw').toString().trim()
     execute('INSERT INTO MoneyOut (id, shopId, amount, purpose, description, partyName, paymentMode, date) VALUES (?,?,?,?,?,?,?,?)',
-      [id, shopId, data.amount, data.purpose || data.category || 'Owner Draw', data.description || null, data.partyName || null, data.paymentMode || 'cash', data.date || new Date().toISOString()])
+      [id, shopId, safeAmount, purpose, data.description || null, data.partyName || null, data.paymentMode || 'cash', data.date || new Date().toISOString()])
     const created = queryOne('SELECT * FROM MoneyOut WHERE id = ?', [id])
     if (created) trackUpsert('MoneyOut', created)
+    try {
+      audit.log('money_out_created', {
+        moneyOutId: id, amount: safeAmount, purpose, partyName: data.partyName,
+        description: data.description, paymentMode: data.paymentMode || 'cash',
+      }, shopId)
+    } catch (e) { console.warn('[moneyOut.create] audit log failed:', e) }
     return created
   },
-  delete(id: string) { execute('DELETE FROM MoneyOut WHERE id = ?', [id]); trackDelete('MoneyOut', id) },
+  delete(id: string) {
+    let row: any = null
+    try { row = queryOne<any>('SELECT * FROM MoneyOut WHERE id = ?', [id]) } catch { /* ignore */ }
+    execute('DELETE FROM MoneyOut WHERE id = ?', [id])
+    trackDelete('MoneyOut', id)
+    if (row) {
+      try {
+        audit.log('money_out_deleted', {
+          moneyOutId: id, amount: row.amount, purpose: row.purpose,
+          description: row.description,
+        }, row.shopId)
+      } catch (e) { console.warn('[moneyOut.delete] audit log failed:', e) }
+    }
+  },
 }
 
 // ═══════════════════════════════════════

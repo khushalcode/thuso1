@@ -27,10 +27,17 @@ export default function MoneyInPage() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const res = await shopFetch('/api/moneyin')
-    const data = await res.json()
-    setItems(data.items)
-    setLoading(false)
+    try {
+      const res = await shopFetch('/api/moneyin')
+      const data = await res.json()
+      setItems(data.items || [])
+    } catch (e) {
+      console.error('[MoneyInPage] load failed:', e)
+      setItems([])
+    } finally {
+      // CRITICAL: Always clear loading even on failure.
+      setLoading(false)
+    }
   }, [])
 
   useEffect(() => { load() }, [load])

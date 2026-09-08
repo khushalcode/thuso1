@@ -319,6 +319,16 @@ export function useShopFetch() {
       audit.log(body.action, body.details, shopId, body.userName)
       return fakeResponse({ ok: true })
     }
+    // WALLET/AUDIT FIX: Add the DELETE handler for /api/audit so the
+    // Audit page's "Clear Old Logs" button actually deletes entries
+    // instead of silently falling through to the 404 catch-all (which
+    // left the dialog stuck open with no feedback to the user).
+    if (url.startsWith('/api/audit?') && method === 'DELETE') {
+      const params = new URLSearchParams(url.split('?')[1] || '')
+      const before = params.get('before') || undefined
+      const deleted = audit.clear(shopId, before)
+      return fakeResponse({ ok: true, deleted })
+    }
 
     // ─── AUTO-SEED ───
     if (url === '/api/auto-seed') return fakeResponse({ seeded: false, message: 'Database already initialized' })

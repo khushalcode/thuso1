@@ -55,13 +55,20 @@ export default function AuditPage() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const params = new URLSearchParams()
-    if (actionFilter !== 'all') params.set('action', actionFilter)
-    params.set('limit', '500')
-    const res = await shopFetch(`/api/audit?${params.toString()}`)
-    const data = await res.json()
-    setLogs(data.logs)
-    setLoading(false)
+    try {
+      const params = new URLSearchParams()
+      if (actionFilter !== 'all') params.set('action', actionFilter)
+      params.set('limit', '500')
+      const res = await shopFetch(`/api/audit?${params.toString()}`)
+      const data = await res.json()
+      setLogs(data.logs || [])
+    } catch (e) {
+      console.error('[AuditPage] load failed:', e)
+      setLogs([])
+    } finally {
+      // CRITICAL: Always clear loading even on failure.
+      setLoading(false)
+    }
   }, [shopFetch, actionFilter])
 
   useEffect(() => {
