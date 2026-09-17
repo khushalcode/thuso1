@@ -202,3 +202,90 @@ npx prisma db push
 bun run scripts/seed-simple.ts
 bun run scripts/seed-license.ts
 ```
+
+---
+
+## Auto-start, background running, and tray behavior (new)
+
+The desktop app now behaves like a kiosk / always-on POS:
+
+1. **Auto-start with the operating system.** On Windows and macOS, the
+   app registers itself via `app.setLoginItemSettings({ openAtLogin: true })`
+   on every launch (idempotent). On Linux, a `~/.config/autostart/thuso.desktop`
+   file is written. The auto-started instance opens with a `--hidden` flag
+   so it stays in the tray until the user explicitly opens the window.
+
+2. **Never quits when the window is closed.** The X button just hides the
+   window to the tray. The Next.js server keeps running so any pending
+   writes, sync queues, and dashboard queries keep working. The app only
+   truly exits when the user picks "Quit Thuso" from the tray context menu,
+   or when the OS shuts down.
+
+3. **Single-instance lock.** If the user double-clicks the app icon again
+   while it's already running, the running instance's window is brought
+   to the front instead of starting a second process.
+
+4. **Tray icon + context menu.** Always created (even in dev). The tray
+   icon's context menu has: Open Thuso, Reload Window, Quit Thuso. Both
+   single-click and double-click on the tray icon show the window.
+
+5. **Background-throttling disabled.** `app.setBackgroundThrottling(false)`
+   so the OS doesn't suspend the embedded Next.js server when the window
+   is hidden.
+
+6. **Renderer crash recovery.** If the renderer process dies (e.g. an
+   uncaught exception in the React app), the window automatically reloads
+   after 5 seconds instead of leaving the user with a blank screen.
+
+---
+
+## Menu page UX change (new)
+
+The success/confirmation toast that used to pop up at the bottom-right
+of the screen after adding/updating/deleting a menu item (or category)
+has been removed per user request. The dialog closing and the list
+refreshing is sufficient feedback. Error toasts are still shown so
+the user knows when an operation fails.
+
+---
+
+## Dashboard real-time refresh (new)
+
+The dashboard used to refresh its revenue / cash-flow numbers on a
+fixed 30-second polling interval. After a bill was generated, the
+user had to wait up to 30 seconds before the balance updated — which
+looked like "the bill time is not updating the balance".
+
+The app now ships with an in-window event bus (`notifyDataChanged` in
+`src/lib/client-data.ts`). Every bill / money-in / money-out / expense /
+purchase write fires a `thuso:data-changed` CustomEvent on `window`.
+The dashboard and home screen subscribe to this event and refetch
+within ~150ms (debounced). After generating a bill in Counter Mode
+and navigating back to the dashboard, the new revenue is visible
+immediately.
+
+---
+
+## Database resilience (new)
+
+Previous failure modes that showed up as "Database Error":
+
+1. The WASM file (`sql-wasm.wasm`) couldn't be loaded — only one CDN
+   fallback was tried. Now three CDNs are tried (sql.js.org, jsDelivr,
+   unpkg) in addition to the local bundle.
+2. A corrupted IndexedDB backup caused `new SQL.Database(existingData)`
+   to throw, which propagated all the way up to the user as a Database
+   Error screen. Now the corrupt backup is stashed under a separate
+   IndexedDB key and a fresh DB is re-seeded, so the user can keep
+   working.
+3. `migrateSchema()` could throw on a single bad `ALTER TABLE`. Now
+   every migration step is wrapped in try/catch and a bad column
+   no longer aborts the whole init.
+4. `persistDBSync()` (called on tab close / app close) had a known
+   ReferenceError on `MAX_BACKUP_SIZE`. Fixed — now it does a clean
+   IndexedDB write AND a best-effort localStorage mirror (under 2 MB)
+   as a secondary safety net.
+5. Every 30 seconds, a periodic background save flushes the in-memory
+   DB to IndexedDB — protects against data loss if the user closes
+   the laptop lid without firing `beforeunload`.
+

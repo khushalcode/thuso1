@@ -110,7 +110,8 @@ export default function MenuPage() {
       toast.error('Failed to create item')
       return
     }
-    toast.success('Item added')
+    // Confirmation popup removed per user request — the dialog closes
+    // and the list refreshes, which is sufficient feedback.
     setShowAdd(false)
     load()
   }
@@ -126,7 +127,7 @@ export default function MenuPage() {
       toast.error('Failed to update')
       return
     }
-    toast.success('Item updated')
+    // Confirmation popup removed per user request.
     setEditItem(null)
     load()
   }
@@ -138,7 +139,7 @@ export default function MenuPage() {
       toast.error('Failed to delete')
       return
     }
-    toast.success('Item deleted')
+    // Confirmation popup removed per user request.
     setDelItem(null)
     load()
   }
@@ -614,7 +615,7 @@ function CategoriesManager({
         toast.error(data?.error || 'Failed to add category')
         return
       }
-      toast.success(`Category "${name}" added`)
+      // Confirmation popup removed per user request.
       setNewName('')
       setNewColor('slate')
       await onChange()
@@ -643,7 +644,7 @@ function CategoriesManager({
         toast.error(data?.error || 'Failed to rename')
         return
       }
-      toast.success('Category renamed')
+      // Confirmation popup removed per user request.
       setEditingId(null)
       // Renaming changes the `category` string on MenuItem rows, so refresh items too.
       await Promise.all([onChange(), onItemsChanged()])
@@ -682,7 +683,7 @@ function CategoriesManager({
         toast.error(data?.error || 'Failed to delete')
         return
       }
-      toast.success(`Deleted "${delConfirm.name}" — items moved to "General"`)
+      // Confirmation popup removed per user request.
       setDelConfirm(null)
       // Deleting reassigns items to "General", so refresh items too.
       await Promise.all([onChange(), onItemsChanged()])

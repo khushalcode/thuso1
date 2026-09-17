@@ -15,6 +15,7 @@ import { useSession } from '@/lib/session'
 import { LoginScreen } from '@/components/auth/LoginScreen'
 import { GlobalShortcutBar } from '@/components/shared/GlobalShortcutBar'
 import { useShopFetch } from '@/hooks/use-shop-fetch'
+import { onDataChanged } from '@/lib/client-data'
 import { initDB, persistDBSync } from '@/lib/client-db'
 import CounterMode from '@/components/counter/CounterMode'
 import KitchenMode from '@/components/kitchen/KitchenMode'
@@ -146,7 +147,29 @@ function HomeScreen({ mode, onSelect, daysLeft }: { mode: Mode; onSelect: (m: Mo
 
   useEffect(() => {
     if (!currentShop) return
-    shopFetch('/api/dashboard').then((r) => r.json()).then((d) => setDashData(d)).catch(() => {})
+    const load = () => {
+      shopFetch('/api/dashboard').then((r) => r.json()).then((d) => setDashData(d)).catch(() => {})
+    }
+    load()
+    // ─── Immediate refresh on data-changed events ────────────────────
+    // Per user requirement: "bill time is not updating the balance" —
+    // the Home screen's "Today's Revenue" stat card was waiting up to
+    // 30s (or until the user manually navigated away and back) before
+    // reflecting a freshly-created bill. We now subscribe to the
+    // in-app data-changed event and refetch instantly when a bill /
+    // money-in / money-out / expense / purchase write happens.
+    let pending: any = null
+    const trigger = () => {
+      if (pending) return
+      pending = setTimeout(() => { pending = null; load() }, 150)
+    }
+    const unsub = onDataChanged(trigger, [
+      'Bill', 'MoneyIn', 'MoneyOut', 'Expense', 'Purchase',
+    ])
+    return () => {
+      if (pending) clearTimeout(pending)
+      unsub()
+    }
   }, [shopFetch, currentShop?.id])
 
   const isAdmin = user?.role === 'admin'

@@ -20,6 +20,14 @@ import {
 import { formatCurrency, formatDateTime, timeAgo } from '@/lib/format'
 import type { DashboardData } from '@/lib/types'
 import { useShopFetch } from '@/hooks/use-shop-fetch'
+// onDataChanged subscribes to the in-app "data changed" event so the
+// dashboard refreshes IMMEDIATELY when a bill is created (or any other
+// cash-flow-affecting write happens). Per user requirement: "check the
+// bill time is not updating the balance" — the previous behavior was
+// to wait up to 30 seconds for the polling interval to tick, which
+// made it look like the dashboard's balance wasn't updating after a
+// bill was generated.
+import { onDataChanged } from '@/lib/client-data'
 import { GlobalShortcutBar } from '@/components/shared/GlobalShortcutBar'
 
 type PeriodType = 'today' | '7d' | '30d' | 'monthly'
@@ -58,9 +66,32 @@ export default function DashboardPage({ currentMode, onNavigate }: DashboardPage
     }
     load()
     const t = setInterval(load, 30_000)
+    // ─── Immediate refresh on data-changed events ────────────────────
+    // When a bill is created (or money in/out, expense, purchase), the
+    // dashboard refetches right away instead of waiting up to 30s.
+    // This is the fix for "bill time not updating the balance" — the
+    // user generates a bill, navigates back to the dashboard, and
+    // sees the new revenue/balance instantly.
+    //
+    // Debounce: a single bill creation triggers up to 4 events
+    // (Bill + MoneyIn + Orders + RestaurantTable). We coalesce them
+    // into one refetch via a 150ms timer.
+    let pendingReload: any = null
+    const triggerReload = () => {
+      if (pendingReload) return
+      pendingReload = setTimeout(() => {
+        pendingReload = null
+        load()
+      }, 150)
+    }
+    const unsubscribe = onDataChanged(triggerReload, [
+      'Bill', 'MoneyIn', 'MoneyOut', 'Expense', 'Purchase', 'Orders',
+    ])
     return () => {
       mounted = false
       clearInterval(t)
+      if (pendingReload) clearTimeout(pendingReload)
+      unsubscribe()
     }
     // WALLET FIX: Previously deps were `[]`, so when the user switched
     // shops while sitting on the dashboard, the 30s interval kept

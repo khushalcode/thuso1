@@ -8,6 +8,47 @@ import { isValidKey } from './license-keys'
 const trackUpsert = (_table: string, _row: any) => {}
 const trackDelete = (_table: string, _id: string) => {}
 
+// ─── Cross-component "data changed" notification ──────────────────────
+// Per user requirement: "check the bill time is not updating the
+// balance" — i.e. after creating a bill, the dashboard's revenue /
+// cash-flow numbers should reflect the new bill immediately, not 30
+// seconds later. We dispatch a `thuso:data-changed` CustomEvent on
+// `window` after every meaningful write. UI components (dashboard,
+// history page, etc.) subscribe to this event and refetch on receipt.
+//
+// The event payload includes the affected table name so subscribers
+// can decide whether to refetch (e.g. the dashboard only refetches
+// on bill/moneyIn/moneyOut/expense/purchase changes).
+export function notifyDataChanged(table: string, op: 'insert' | 'update' | 'delete' = 'insert') {
+  try {
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('thuso:data-changed', { detail: { table, op, ts: Date.now() } }))
+    }
+  } catch (e) {
+    // Non-fatal — UI just won't get the instant refresh.
+  }
+}
+
+// Helper: subscribe to data-changed events. Returns an unsubscribe fn.
+// Optionally filter by table name (string or string[]).
+export function onDataChanged(
+  handler: (detail: { table: string; op: string; ts: number }) => void,
+  tableFilter?: string | string[]
+): () => void {
+  if (typeof window === 'undefined') return () => {}
+  const listener = (e: Event) => {
+    const detail = (e as CustomEvent).detail as { table: string; op: string; ts: number }
+    if (!detail) return
+    if (tableFilter) {
+      const filters = Array.isArray(tableFilter) ? tableFilter : [tableFilter]
+      if (!filters.includes(detail.table)) return
+    }
+    try { handler(detail) } catch (err) { console.warn('[onDataChanged] handler threw:', err) }
+  }
+  window.addEventListener('thuso:data-changed', listener)
+  return () => window.removeEventListener('thuso:data-changed', listener)
+}
+
 /**
  * Client-side data access layer
  * Replaces ALL server-side API routes with direct SQLite queries.
@@ -627,6 +668,14 @@ export const bills = {
     } catch (e) {
       console.warn('[bills.create] MoneyIn sync track failed (non-fatal):', e)
     }
+    // ─── Notify subscribers (dashboard, history page) that a bill was
+    // created — so they refetch immediately instead of waiting up to
+    // 30 seconds for the next polling tick. Per user requirement:
+    // "the bill time is not updating the balance" — this is the fix.
+    notifyDataChanged('Bill', 'insert')
+    notifyDataChanged('MoneyIn', 'insert')
+    notifyDataChanged('Orders', 'update')
+    notifyDataChanged('RestaurantTable', 'update')
     return created
   },
 
@@ -1045,6 +1094,7 @@ export const purchases = {
         itemCount: (data.items || []).length,
       }, shopId)
     } catch (e) { console.warn('[purchases.create] audit log failed:', e) }
+    notifyDataChanged('Purchase', 'insert')
     return created
   },
   delete(id: string) {
@@ -1086,6 +1136,7 @@ export const purchases = {
         }, purchase.shopId)
       } catch (e) { console.warn('[purchases.delete] audit log failed:', e) }
     }
+    notifyDataChanged('Purchase', 'delete')
   },
 }
 
@@ -1118,6 +1169,7 @@ export const expenses = {
         description: data.description, paymentMode: data.paymentMode || 'cash',
       }, shopId)
     } catch (e) { console.warn('[expenses.create] audit log failed:', e) }
+    notifyDataChanged('Expense', 'insert')
     return created
   },
   delete(id: string) {
@@ -1136,6 +1188,7 @@ export const expenses = {
         }, row.shopId)
       } catch (e) { console.warn('[expenses.delete] audit log failed:', e) }
     }
+    notifyDataChanged('Expense', 'delete')
   },
 }
 
@@ -1181,6 +1234,7 @@ export const moneyIn = {
         description: data.description, paymentMode: data.paymentMode || 'cash',
       }, shopId)
     } catch (e) { console.warn('[moneyIn.create] audit log failed:', e) }
+    notifyDataChanged('MoneyIn', 'insert')
     return created
   },
   delete(id: string) {
@@ -1196,6 +1250,7 @@ export const moneyIn = {
         }, row.shopId)
       } catch (e) { console.warn('[moneyIn.delete] audit log failed:', e) }
     }
+    notifyDataChanged('MoneyIn', 'delete')
   },
 }
 
@@ -1222,6 +1277,7 @@ export const moneyOut = {
         description: data.description, paymentMode: data.paymentMode || 'cash',
       }, shopId)
     } catch (e) { console.warn('[moneyOut.create] audit log failed:', e) }
+    notifyDataChanged('MoneyOut', 'insert')
     return created
   },
   delete(id: string) {
@@ -1237,6 +1293,7 @@ export const moneyOut = {
         }, row.shopId)
       } catch (e) { console.warn('[moneyOut.delete] audit log failed:', e) }
     }
+    notifyDataChanged('MoneyOut', 'delete')
   },
 }
 

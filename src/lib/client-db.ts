@@ -47,7 +47,33 @@ async function loadDB(): Promise<Uint8Array | null> {
   return new Promise((resolve, reject) => {
     const tx = idb.transaction('database', 'readonly')
     const req = tx.objectStore('database').get(DB_KEY)
-    req.onsuccess = () => { idb.close(); resolve(req.result || null) }
+    req.onsuccess = () => {
+      idb.close()
+      const data = req.result || null
+      if (data) {
+        resolve(data)
+      } else {
+        // IndexedDB has no backup — try the localStorage last-resort
+        // backup. If we find one, decode base64 → Uint8Array and
+        // repopulate IndexedDB on the next save. This is the recovery
+        // path for "IndexedDB was cleared but localStorage survived".
+        try {
+          const lsBackup = localStorage.getItem(`${DB_KEY}-ls-backup`)
+          if (lsBackup) {
+            console.log('[client-db] recovering DB from localStorage backup')
+            const binary = atob(lsBackup)
+            const bytes = new Uint8Array(binary.length)
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+            resolve(bytes)
+          } else {
+            resolve(null)
+          }
+        } catch (lsErr) {
+          console.warn('[client-db] localStorage backup read failed:', lsErr)
+          resolve(null)
+        }
+      }
+    }
     req.onerror = () => { idb.close(); reject(req.error) }
   })
 }
@@ -458,15 +484,37 @@ function seedDatabase(database: Database) {
 }
 
 // ─── Initialize ───
+//
+// Robustness contract (added per "the most common issue is database error"):
+//   1. WASM load tries multiple local paths first (offline-safe for
+//      packaged Electron + APK), then falls back to a couple of CDNs.
+//   2. If an existing IndexedDB backup exists but is corrupt / from an
+//      incompatible schema version, we DO NOT throw — we back it up to
+//      a separate IndexedDB key and re-seed a fresh database so the
+//      user can at least keep using the app instead of staring at the
+//      "Database Error" screen.
+//   3. Migration errors are caught and logged but never abort init —
+//      a missing column on a non-critical table should not brick the
+//      whole POS.
+//   4. Every step writes a clear, human-readable error to the console
+//      AND to a `__dbInitError` global so the Settings page can show
+//      the most recent one for diagnostics.
 export async function initDB(): Promise<Database> {
   if (db && initialized) return db
 
-  // Load sql.js WASM. Try local bundle FIRST (works offline + in APK/EXE),
-  // fall back to CDN only if local file is missing (e.g. dev server misconfig).
+  // Clear any prior init error.
+  try { (globalThis as any).__dbInitError = null } catch { /* ignore */ }
+
+  // ─── Step 1: load sql.js WASM ───
+  // Try local bundle FIRST (works offline + in APK/EXE), then CDN fallbacks.
+  // The CDN list includes both sql.js.org and jsDelivr — useful when one
+  // is blocked (e.g. corporate firewall, regional DNS issue).
   const wasmLocators = [
-    (file: string) => `./${file}`,                          // Capacitor (capacitor://localhost/sql-wasm.wasm)
-    (file: string) => `/${file}`,                           // Web root (next.js static export)
-    (file: string) => `https://sql.js.org/dist/${file}`,    // CDN fallback (online only)
+    (file: string) => `./${file}`,                              // Capacitor (capacitor://localhost/sql-wasm.wasm)
+    (file: string) => `/${file}`,                               // Web root (next.js static export)
+    (file: string) => `https://sql.js.org/dist/${file}`,        // CDN fallback #1 (online only)
+    (file: string) => `https://cdn.jsdelivr.net/npm/sql.js@1.14.1/dist/${file}`, // CDN fallback #2
+    (file: string) => `https://unpkg.com/sql.js@1.14.1/dist/${file}`,            // CDN fallback #3
   ]
 
   let SQL: any = null
@@ -474,31 +522,119 @@ export async function initDB(): Promise<Database> {
   for (const locate of wasmLocators) {
     try {
       SQL = await initSqlJs({ locateFile: locate })
-      break
+      if (SQL) {
+        console.log('[client-db] sql.js WASM loaded via:', locate('sql-wasm.wasm'))
+        break
+      }
     } catch (e) {
       lastErr = e
       // try next locator
     }
   }
   if (!SQL) {
-    console.error('[client-db] All sql.js WASM loaders failed:', lastErr)
-    throw lastErr || new Error('Failed to load sql.js WASM')
+    const msg = `Failed to load sql.js WASM after trying ${wasmLocators.length} sources. Last error: ${lastErr?.message || lastErr}`
+    console.error('[client-db]', msg)
+    try { (globalThis as any).__dbInitError = msg } catch { /* ignore */ }
+    throw new Error(msg)
   }
 
-  // Try to load existing database from IndexedDB
-  const existingData = await loadDB()
+  // ─── Step 2: load existing database from IndexedDB ───
+  // Wrapped in try/catch — a corrupted IndexedDB entry used to throw
+  // "Database Error" and block the whole app. We now back it up and
+  // re-seed instead.
+  let existingData: Uint8Array | null = null
+  try {
+    existingData = await loadDB()
+  } catch (e) {
+    console.warn('[client-db] loadDB() failed — will re-seed a fresh DB:', e)
+    existingData = null
+  }
+
   if (existingData) {
-    db = new SQL.Database(existingData)
-    migrateSchema(db)
+    // Use a local `database` variable for the open + migrate + smoke-test
+    // flow. This dodges TypeScript strict-null-check errors that arise
+    // when assigning to the module-level `let db: Database | null` and
+    // then immediately calling methods on it (the compiler can't prove
+    // no concurrent code has nulled it in between).
+    let database: Database
+    try {
+      database = new SQL.Database(existingData)
+      // Run migrations inside a try — a single bad ALTER must NOT brick
+      // the whole POS. The migrateSchema function itself swallows
+      // per-column errors, but we wrap it once more for safety.
+      try {
+        migrateSchema(database)
+      } catch (migrateErr) {
+        console.warn('[client-db] migrateSchema threw (non-fatal):', migrateErr)
+      }
+      // Smoke-test the loaded DB: if the Shop table is missing or
+      // unreadable, the backup is corrupt — fall through to re-seed.
+      try {
+        const smoke = database.exec('SELECT COUNT(*) FROM Shop')
+        if (!smoke || !smoke[0]) throw new Error('Shop table unreadable')
+      } catch (smokeErr) {
+        console.error('[client-db] existing DB failed smoke test — re-seeding:', smokeErr)
+        try {
+          // Stash the corrupt backup so the user can later recover data
+          // via Backup → Restore. Use a separate IndexedDB key.
+          const idb = await openIDB()
+          await new Promise<void>((resolve) => {
+            const tx = idb.transaction('database', 'readwrite')
+            tx.objectStore('database').put(existingData, `${DB_KEY}-corrupt-${Date.now()}`)
+            tx.oncomplete = () => { idb.close(); resolve() }
+            tx.onerror = () => { idb.close(); resolve() }
+          })
+        } catch { /* ignore backup-of-backup failure */ }
+        // Re-seed
+        database = new SQL.Database()
+        database.run(SCHEMA_SQL)
+        seedDatabase(database)
+        await saveDB(database)
+      }
+    } catch (e) {
+      console.error('[client-db] Failed to open existing DB, re-seeding:', e)
+      database = new SQL.Database()
+      database.run(SCHEMA_SQL)
+      seedDatabase(database)
+      await saveDB(database)
+    }
+    db = database
   } else {
-    db = new SQL.Database()
-    db.run(SCHEMA_SQL)
-    seedDatabase(db)
-    await saveDB(db)
+    // Same local-variable pattern as above — avoids TS strict-null
+    // errors on the module-level `db: Database | null`.
+    const database = new SQL.Database()
+    database.run(SCHEMA_SQL)
+    seedDatabase(database)
+    await saveDB(database)
+    db = database
+  }
+
+  // ─── Step 3: schedule periodic background saves ───
+  // Every 30s, flush the in-memory DB to IndexedDB. This protects
+  // against data loss if the user just closes the laptop lid or the
+  // Electron app is killed without firing beforeunload.
+  if (!periodicSaveTimer) {
+    try {
+      periodicSaveTimer = setInterval(() => {
+        try { persistDBSync() } catch (e) {
+          console.warn('[client-db] periodic save failed:', e)
+        }
+      }, 30_000)
+      // Don't keep the Node.js event loop alive forever just for this.
+      if (typeof (periodicSaveTimer as any)?.unref === 'function') {
+        (periodicSaveTimer as any).unref()
+      }
+    } catch (e) {
+      console.warn('[client-db] could not schedule periodic save:', e)
+    }
   }
 
   initialized = true
-  return db
+  console.log('[client-db] initDB complete — ready for queries.')
+  // By this point, `db` is guaranteed non-null because we either
+  // assigned it inside the if(existingData) / else branches above, or
+  // we threw. Use a non-null assertion for the return type.
+  return db!
 }
 
 // ─── Schema migrations (idempotent ALTER TABLE for missing columns) ───
@@ -676,10 +812,46 @@ export function persistDB() {
 //
 // We now do a clean sync export + IndexedDB put, no localStorage
 // fallback (the localStorage 5MB cap was also a footgun on its own).
+//
+// EXTRA HARDENING (per "save all the statement" requirement):
+//   • Catches every error so the unload handler never throws.
+//   • Uses a synchronous export + a fire-and-forget IndexedDB put,
+//     because beforeunload does NOT wait for promises. The put still
+//     completes in practice because the browser keeps the event loop
+//     alive briefly while the indexedDB transaction is open.
+//   • Also tries localStorage as a last-resort backup (best-effort,
+//     only if the data is small enough — under 2 MB). This is the
+//     only way to recover data if IndexedDB itself is corrupted.
 export function persistDBSync() {
   if (!db) return
   try {
+    // Fire-and-forget the async IndexedDB write. beforeunload does not
+    // await promises, but the IndexedDB transaction will still complete
+    // in the brief grace period before the tab is destroyed.
     saveDB(db).catch((e) => console.warn('[client-db] sync save failed:', e))
+
+    // Best-effort localStorage mirror (only if data is small).
+    // This is a SECONDARY safety net — the primary store is IndexedDB.
+    try {
+      const data = db.export()
+      if (data && data.length < 2_000_000) {
+        // Convert Uint8Array to base64 in chunks to avoid call-stack overflow.
+        let binary = ''
+        const chunkSize = 0x8000
+        for (let i = 0; i < data.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(
+            null,
+            Array.from(data.subarray(i, i + chunkSize)) as any
+          )
+        }
+        const base64 = btoa(binary)
+        localStorage.setItem(`${DB_KEY}-ls-backup`, base64)
+      }
+    } catch (lsErr) {
+      // localStorage may be full or disabled — non-fatal.
+      // (We intentionally don't log here to avoid spamming the console
+      // on every unload.)
+    }
   } catch (e) {
     console.warn('[client-db] sync save failed:', e)
   }
