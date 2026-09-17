@@ -322,9 +322,9 @@ export default function CounterMode({ onExit, directMode, currentMode, onNavigat
         createdAt: data.order.createdAt,
         isUpdate: true,
       }
-      sync.sendItemAdded(payload)
+    
     }
-    toast.success(`Added ${qty}× ${item.name}`)
+    
   }
 
   const incItem = async (it: OrderItem) => {
