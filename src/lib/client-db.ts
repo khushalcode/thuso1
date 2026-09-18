@@ -475,7 +475,7 @@ function seedDatabase(database: Database) {
 
   // Seed super admin
   database.run('INSERT INTO AppUser (id, name, email, password, role, active) VALUES (?,?,?,?,?,?)',
-    [genId(), 'Super Admin', 'super@thuso.com', 'admin123', 'admin', 1])
+    [genId(), 'Super Admin', 'super@thuso.com', 'thuso@123', 'admin', 1])
 
   // Seed license keys
   for (const key of LICENSE_KEYS) {
@@ -683,6 +683,20 @@ function migrateSchema(database: Database) {
   addColumn('MenuItem', 'stock', 'INTEGER NOT NULL DEFAULT 0')
   addColumn('MenuItem', 'unit', "TEXT NOT NULL DEFAULT 'Pcs'")
   addColumn('MenuItem', 'available', 'INTEGER NOT NULL DEFAULT 1')
+
+  // ─── One-time password migration ─────────────────────────────────────
+  // The login screen was simplified to password-only with the new default
+  // password "thuso@123". Any existing browser DB still has the old
+  // "admin123" password on the seeded admin user — upgrade it in place so
+  // the user isn't locked out after the change. Idempotent: only updates
+  // rows whose password is still the legacy value.
+  try {
+    database.run(
+      `UPDATE AppUser SET password = 'thuso@123' WHERE password = 'admin123'`
+    )
+  } catch (e) {
+    console.warn('[migrate] could not upgrade legacy admin password:', e)
+  }
 
   // ─── Idempotent table creation for upgrades ───────────────────────────
   // Existing user databases (in IndexedDB) won't have the DeletedBill or

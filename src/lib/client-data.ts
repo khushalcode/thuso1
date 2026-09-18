@@ -64,11 +64,25 @@ export function onDataChanged(
 //  AUTH
 // ═══════════════════════════════════════
 export const auth = {
+  /**
+   * Login by password only.
+   *
+   * If `email` is empty (the default since we removed the email field from the
+   * login screen), this matches ANY active user whose password equals the
+   * supplied value. If `email` is supplied, the original strict behaviour
+   * (match by email + password) is preserved for backwards compatibility
+   * (e.g. server-side `/api/auth/login` callers).
+   */
   login(email: string, password: string) {
-    const user = queryOne<any>(
-      'SELECT * FROM AppUser WHERE email = ? AND password = ? AND active = 1',
-      [email.toLowerCase().trim(), password]
-    )
+    const user = email && email.trim().length > 0
+      ? queryOne<any>(
+          'SELECT * FROM AppUser WHERE email = ? AND password = ? AND active = 1',
+          [email.toLowerCase().trim(), password]
+        )
+      : queryOne<any>(
+          'SELECT * FROM AppUser WHERE password = ? AND active = 1 LIMIT 1',
+          [password]
+        )
     if (!user) return null
     const shops = user.shopId
       ? query('SELECT * FROM Shop WHERE id = ?', [user.shopId])

@@ -279,3 +279,25 @@ body {
   backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
+
+/* ─── Snappier sonner toasts ─────────────────────────────────────────── */
+/* Tighten the default enter/exit transitions so quick toasts (e.g. "Added 2× Burger")
+   physically come and go fast, instead of slowly sliding. */
+[data-sonner-toast] {
+  --y: 0px;
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.9, 0.3, 1),
+    opacity 180ms ease,
+    height 220ms ease,
+    box-shadow 200ms ease;
+}
+[data-sonner-toast][data-mounted="false"] {
+  transition:
+    transform 160ms ease-in,
+    opacity 160ms ease,
+    height 220ms ease;
+}
+/* Make the swipe-to-dismiss feel snappier too */
+[data-sonner-toast][data-swiped="true"] {
+  transition: transform 120ms ease-out, opacity 120ms ease;
+}

@@ -3,16 +3,29 @@ import { db } from '@/lib/db'
 import { logAudit } from '@/lib/audit'
 
 // POST /api/auth/login — validate credentials, return user + accessible shops
+//
+// Password-only login: if `email` is omitted/empty, match ANY active user
+// whose password equals the supplied value. The login screen no longer
+// collects an email field.
 export async function POST(req: NextRequest) {
   const { email, password } = await req.json()
-  if (!email || !password) {
-    return NextResponse.json({ error: 'Email and password required' }, { status: 400 })
+  if (!password) {
+    return NextResponse.json({ error: 'Password required' }, { status: 400 })
   }
 
-  const user = await db.appUser.findUnique({
-    where: { email: email.toLowerCase().trim() },
-    include: { shop: true },
-  })
+  let user
+  if (email && String(email).trim().length > 0) {
+    user = await db.appUser.findUnique({
+      where: { email: String(email).toLowerCase().trim() },
+      include: { shop: true },
+    })
+  } else {
+    // Password-only: pick the first active user with this password.
+    user = await db.appUser.findFirst({
+      where: { password, active: true },
+      include: { shop: true },
+    })
+  }
 
   if (!user || !user.active) {
     return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
