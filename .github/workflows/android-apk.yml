@@ -1,0 +1,82 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Force-install Linux native binaries
+        run: npm install --no-save --include=optional --os=linux --cpu=x64 --libc=glibc sharp lightningcss @tailwindcss/oxide
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Build Next.js (static export for Capacitor)
+        run: npm run build
+        env:
+          SKIP_ENV_VALIDATION: 'true'
+          BUILD_TARGET: 'apk'
+
+      - name: Verify static export output
+        run: |
+          if [ ! -d "./out" ] || [ ! -f "./out/index.html" ]; then
+            echo "ERROR: ./out/index.html not found. Static export did not run."
+            exit 1
+          fi
+          echo "Static export verified: ./out/index.html exists."
+
+      - name: Sync Capacitor with Android project
+        run: npx cap sync android
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x android/gradlew
+
+      - name: Build debug APK
+        run: |
+          cd android
+          ./gradlew assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: thuso-android-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: android/app/build/outputs/apk/debug/app-debug.apk
+          draft: true
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
